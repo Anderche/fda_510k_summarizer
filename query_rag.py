@@ -26,7 +26,7 @@ from reference_formatter import format_reference_string, format_reference_markdo
 
 
 def load_rag_system(index_dir: str, product_code: str = None, use_llm: bool = False, 
-                    llm_model: str = "claude-3-sonnet-20240229", api_key: str = None):
+                    llm_model: str = "claude-3-haiku-20240307", api_key: str = None):
     """
     Load RAG system from saved index.
     
@@ -117,12 +117,35 @@ def interactive_query(pipeline: QueryPipeline):
         print("\nProcessing query...")
         result = pipeline.process_query(query, k=5)
         
+        # Extract and display summary
+        response_text = result['response']
+        
+        # Check if response already starts with SUMMARY:
+        if not response_text.strip().startswith("SUMMARY:"):
+            # Ensure it starts with SUMMARY:
+            response_text = "SUMMARY:\n" + response_text
+        
         print("\n" + "-" * 80)
-        print("Response:")
+        print(response_text)
         print("-" * 80)
-        print(result['response'])
-        print("\n" + "-" * 80)
-        print(f"Retrieved {result['metadata']['num_retrieved']} relevant documents")
+        
+        # Always show references after summary
+        if result.get('references') or result['retrieved_chunks']:
+            print("\nReferences:")
+            for i, chunk in enumerate(result['retrieved_chunks'][:5], 1):
+                ref_str = format_reference_string(chunk, include_link=True)
+                similarity = chunk.get('similarity_score', 0.0)
+                print(f"  {i}. {ref_str} (Similarity: {similarity:.3f})")
+        
+        # Show refined summary after references if available
+        if result.get('refined_summary'):
+            print("\n" + "=" * 80)
+            refined_text = result['refined_summary']
+            # Ensure it starts with REFINED SUMMARY: if not already
+            if not refined_text.strip().startswith("REFINED SUMMARY"):
+                refined_text = "REFINED SUMMARY:\n" + refined_text
+            print(refined_text)
+            print("=" * 80)
         
         # Show query enhancement info if available
         if result.get('metadata', {}).get('queries_used'):
@@ -130,18 +153,6 @@ def interactive_query(pipeline: QueryPipeline):
             for q_info in result['metadata']['queries_used'][:3]:
                 print(f"  - {q_info}")
         
-        if result.get('references'):
-            print("\nReferences:")
-            for i, chunk in enumerate(result['retrieved_chunks'][:5], 1):
-                ref_str = format_reference_string(chunk, include_link=True)
-                similarity = chunk.get('similarity_score', 0.0)
-                print(f"  {i}. {ref_str} (Similarity: {similarity:.3f})")
-        elif result['retrieved_chunks']:
-            print("Top sources:")
-            for i, chunk in enumerate(result['retrieved_chunks'][:3], 1):
-                k_number = chunk.get('metadata', {}).get('k_number', 'Unknown')
-                similarity = chunk.get('similarity_score', 0.0)
-                print(f"  {i}. K-number: {k_number}, Similarity: {similarity:.3f}")
         print("-" * 80 + "\n")
 
 
@@ -150,7 +161,7 @@ if __name__ == "__main__":
     parser.add_argument('index_dir', help='Directory containing RAG index files')
     parser.add_argument('--product-code', help='Product code for context')
     parser.add_argument('--use-llm', action='store_true', help='Use Claude API for responses (requires ANTHROPIC_API_KEY)')
-    parser.add_argument('--llm-model', default='claude-3-sonnet-20240229', help='Claude model name')
+    parser.add_argument('--llm-model', default='claude-3-haiku-20240307', help='Claude model name (default: claude-3-haiku-20240307)')
     parser.add_argument('--api-key', default=None, help='Anthropic API key (defaults to ANTHROPIC_API_KEY env var)')
     parser.add_argument('--query', help='Single query to process (non-interactive mode)')
     parser.add_argument('-k', type=int, default=5, help='Number of chunks to retrieve')
@@ -169,22 +180,42 @@ if __name__ == "__main__":
         # Single query mode
         result = pipeline.process_query(args.query, k=args.k)
         print("\nQuery:", result['query'])
-        print("\nResponse:")
-        print(result['response'])
-        print(f"\nRetrieved {result['metadata']['num_retrieved']} documents")
+        
+        # Extract and display summary
+        response_text = result['response']
+        
+        # Check if response already starts with SUMMARY:
+        if not response_text.strip().startswith("SUMMARY:"):
+            # Ensure it starts with SUMMARY:
+            response_text = "SUMMARY:\n" + response_text
+        
+        print("\n" + "-" * 80)
+        print(response_text)
+        print("-" * 80)
+        
+        # Always show references after summary
+        if result.get('references') or result['retrieved_chunks']:
+            print("\nReferences:")
+            for i, chunk in enumerate(result['retrieved_chunks'][:5], 1):
+                ref_str = format_reference_string(chunk, include_link=True)
+                similarity = chunk.get('similarity_score', 0.0)
+                print(f"  {i}. {ref_str} (Similarity: {similarity:.3f})")
+        
+        # Show refined summary after references if available
+        if result.get('refined_summary'):
+            print("\n" + "=" * 80)
+            refined_text = result['refined_summary']
+            # Ensure it starts with REFINED SUMMARY: if not already
+            if not refined_text.strip().startswith("REFINED SUMMARY"):
+                refined_text = "REFINED SUMMARY:\n" + refined_text
+            print(refined_text)
+            print("=" * 80)
         
         # Show query enhancement info if available
         if result.get('metadata', {}).get('queries_used'):
             print(f"\nQuery enhancements:")
             for q_info in result['metadata']['queries_used'][:3]:
                 print(f"  - {q_info}")
-        
-        if result.get('references'):
-            print("\nReferences:")
-            for i, chunk in enumerate(result['retrieved_chunks'][:5], 1):
-                ref_str = format_reference_string(chunk, include_link=True)
-                similarity = chunk.get('similarity_score', 0.0)
-                print(f"  {i}. {ref_str} (Similarity: {similarity:.3f})")
     else:
         # Interactive mode
         interactive_query(pipeline)

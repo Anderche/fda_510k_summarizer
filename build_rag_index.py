@@ -26,7 +26,7 @@ from llm_integration import LLMGenerator, SimpleLLMGenerator
 
 
 def build_rag_index(corpus_dir: str, output_dir: str = "rag_index", 
-                   chunk_size: int = 500, chunk_overlap: int = 50,
+                   chunk_size: int = 800, chunk_overlap: int = 100,
                    generate_sub_summaries: bool = True,
                    use_llm: bool = False, llm_model: str = "claude-3-sonnet-20240229", api_key: str = None):
     """
@@ -170,8 +170,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Build RAG index from corpus PDFs')
     parser.add_argument('corpus_dir', help='Directory containing PDF files')
     parser.add_argument('--output-dir', default='rag_index', help='Output directory for index files')
-    parser.add_argument('--chunk-size', type=int, default=500, help='Chunk size in tokens (default: 500)')
-    parser.add_argument('--chunk-overlap', type=int, default=50, help='Chunk overlap in tokens (default: 50)')
+    parser.add_argument('--chunk-size', type=int, default=800, help='Chunk size in tokens (default: 800 for more chunks per PDF)')
+    parser.add_argument('--chunk-overlap', type=int, default=100, help='Chunk overlap in tokens (default: 100)')
     parser.add_argument('--no-sub-summaries', action='store_true', help='Disable sub-summary generation')
     parser.add_argument('--use-llm', action='store_true', help='Use Claude API for sub-summaries (requires ANTHROPIC_API_KEY)')
     parser.add_argument('--llm-model', default='claude-3-sonnet-20240229', help='Claude model name')

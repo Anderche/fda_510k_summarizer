@@ -43,12 +43,17 @@ def extract_text_from_pdf(pdf_path: str, use_pdfplumber: bool = True) -> Optiona
             return None
     
     if pages_data:
-        # Reconstruct full text and apply cleaning
+        # Reconstruct full text and apply cleaning, preserving header information
         full_text_parts = []
         for page_data in pages_data:
             page_text_parts = []
             for para in page_data['paragraphs']:
-                cleaned_para = clean_text(para['text'])
+                # Don't clean headers too aggressively - preserve their format
+                if para.get('is_header', False):
+                    cleaned_para = para['text'].strip()
+                else:
+                    cleaned_para = clean_text(para['text'])
+                
                 if cleaned_para:
                     para['text'] = cleaned_para
                     page_text_parts.append(cleaned_para)
@@ -60,7 +65,7 @@ def extract_text_from_pdf(pdf_path: str, use_pdfplumber: bool = True) -> Optiona
         full_text = filter_headers_footers(full_text)
         
         # Re-apply paragraph splitting after filtering for cleaner structure
-        # But preserve page info
+        # But preserve page info and header metadata
         return {
             'text': full_text,
             'pages_data': pages_data
@@ -69,29 +74,191 @@ def extract_text_from_pdf(pdf_path: str, use_pdfplumber: bool = True) -> Optiona
     return None
 
 
+def _split_paragraphs(text: str) -> List[str]:
+    """
+    Intelligently split text into paragraphs using multiple heuristics.
+    
+    Args:
+        text: Text to split
+        
+    Returns:
+        List of paragraph texts
+    """
+    if not text or not text.strip():
+        return []
+    
+    # First try double newlines (most reliable)
+    paragraphs = [p.strip() for p in text.split('\n\n') if p.strip() and len(p.strip()) > 20]
+    
+    # If we only got one paragraph, try more aggressive splitting
+    if len(paragraphs) <= 1:
+        # Split by single newlines and look for sentence endings
+        lines = text.split('\n')
+        current_para = []
+        paragraphs = []
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                # Empty line - end of paragraph if we have content
+                if current_para:
+                    para_text = ' '.join(current_para)
+                    if len(para_text) > 20:
+                        paragraphs.append(para_text)
+                    current_para = []
+                continue
+            
+            # Check if line starts a new paragraph (sentence-ending punctuation + capital or number)
+            # or if current paragraph is getting too long (likely paragraph break)
+            if current_para:
+                last_char = current_para[-1][-1] if current_para[-1] else ''
+                # If last line ended with sentence punctuation and this line starts with capital
+                if last_char in '.!?' and line and line[0].isupper():
+                    # Save current paragraph
+                    para_text = ' '.join(current_para)
+                    if len(para_text) > 20:
+                        paragraphs.append(para_text)
+                    current_para = [line]
+                # If current paragraph is very long (>500 chars), start new one at sentence break
+                elif len(' '.join(current_para)) > 500 and last_char in '.!?':
+                    para_text = ' '.join(current_para)
+                    if len(para_text) > 20:
+                        paragraphs.append(para_text)
+                    current_para = [line]
+                else:
+                    current_para.append(line)
+            else:
+                current_para.append(line)
+        
+        # Add last paragraph
+        if current_para:
+            para_text = ' '.join(current_para)
+            if len(para_text) > 20:
+                paragraphs.append(para_text)
+    
+    return paragraphs
+
+
 def _extract_with_pdfplumber(pdf_path: str) -> Optional[List[Dict[str, Any]]]:
-    """Extract text using pdfplumber (better for tables and complex layouts) with page/paragraph tracking."""
+    """Extract text using pdfplumber with formatting metadata to identify headers."""
     pages_data = []
     
     with pdfplumber.open(pdf_path) as pdf:
         for page_num, page in enumerate(pdf.pages, start=1):
-            text = page.extract_text()
-            if text and text.strip():
-                # Split into paragraphs
-                paragraphs = [p.strip() for p in text.split('\n\n') if p.strip() and len(p.strip()) > 20]
+            # Extract text with character-level formatting info
+            chars = page.chars
+            
+            if not chars:
+                continue
+            
+            # Build text with formatting metadata
+            lines_with_formatting = []
+            current_line = []
+            current_font_size = None
+            current_y = None
+            
+            for char in chars:
+                char_text = char.get('text', '')
+                char_font_size = char.get('size', 0)
+                char_y = char.get('top', 0)
                 
-                page_paragraphs = []
-                for para_index, para_text in enumerate(paragraphs, start=1):
+                # Check if this is a new line (significant Y position change)
+                if current_y is not None and abs(char_y - current_y) > 2:
+                    if current_line:
+                        lines_with_formatting.append({
+                            'text': ''.join([c['text'] for c in current_line]),
+                            'font_size': current_font_size,
+                            'y_pos': current_y
+                        })
+                    current_line = []
+                    current_font_size = None
+                
+                current_line.append({'text': char_text})
+                if current_font_size is None:
+                    current_font_size = char_font_size
+                current_y = char_y
+            
+            # Add last line
+            if current_line:
+                lines_with_formatting.append({
+                    'text': ''.join([c['text'] for c in current_line]),
+                    'font_size': current_font_size if current_font_size else 0,
+                    'y_pos': current_y if current_y else 0
+                })
+            
+            # Calculate average font size for the page
+            font_sizes = [line['font_size'] for line in lines_with_formatting if line['font_size'] > 0]
+            avg_font_size = sum(font_sizes) / len(font_sizes) if font_sizes else 12
+            
+            # Group lines into paragraphs and identify headers
+            page_paragraphs = []
+            current_para_lines = []
+            
+            for line_info in lines_with_formatting:
+                line_text = line_info['text'].strip()
+                font_size = line_info['font_size']
+                
+                # Identify potential headers: larger font size or specific formatting
+                is_likely_header = (
+                    font_size > avg_font_size * 1.15 or  # 15% larger than average
+                    (line_text and (
+                        line_text.isupper() or  # All caps
+                        line_text.endswith(':') or  # Ends with colon
+                        re.match(r'^\d+[\.\)]\s+[A-Z]', line_text)  # Numbered header
+                    ))
+                )
+                
+                if not line_text:
+                    # Empty line - end current paragraph
+                    if current_para_lines:
+                        para_text = ' '.join(current_para_lines)
+                        if para_text.strip():
+                            page_paragraphs.append({
+                                'text': para_text,
+                                'para_index': len(page_paragraphs) + 1,
+                                'is_header': False  # Paragraph content, not header
+                            })
+                        current_para_lines = []
+                
+                elif is_likely_header and len(line_text) <= 80:
+                    # Potential header - save previous paragraph if exists
+                    if current_para_lines:
+                        para_text = ' '.join(current_para_lines)
+                        if para_text.strip():
+                            page_paragraphs.append({
+                                'text': para_text,
+                                'para_index': len(page_paragraphs) + 1,
+                                'is_header': False
+                            })
+                        current_para_lines = []
+                    
+                    # Save header
+                    page_paragraphs.append({
+                        'text': line_text,
+                        'para_index': len(page_paragraphs) + 1,
+                        'is_header': True,
+                        'font_size': font_size
+                    })
+                else:
+                    # Regular text - add to current paragraph
+                    current_para_lines.append(line_text)
+            
+            # Add final paragraph
+            if current_para_lines:
+                para_text = ' '.join(current_para_lines)
+                if para_text.strip():
                     page_paragraphs.append({
                         'text': para_text,
-                        'para_index': para_index
+                        'para_index': len(page_paragraphs) + 1,
+                        'is_header': False
                     })
-                
-                if page_paragraphs:
-                    pages_data.append({
-                        'page_num': page_num,
-                        'paragraphs': page_paragraphs
-                    })
+            
+            if page_paragraphs:
+                pages_data.append({
+                    'page_num': page_num,
+                    'paragraphs': page_paragraphs,
+                    'avg_font_size': avg_font_size
+                })
     
     if not pages_data:
         return None
@@ -108,8 +275,8 @@ def _extract_with_pymupdf(pdf_path: str) -> Optional[List[Dict[str, Any]]]:
         page = doc[page_num]
         text = page.get_text()
         if text.strip():
-            # Split into paragraphs
-            paragraphs = [p.strip() for p in text.split('\n\n') if p.strip() and len(p.strip()) > 20]
+            # Split into paragraphs using improved logic
+            paragraphs = _split_paragraphs(text)
             
             page_paragraphs = []
             for para_index, para_text in enumerate(paragraphs, start=1):

@@ -28,6 +28,8 @@ class VectorStore:
         self.index = faiss.IndexFlatIP(embedding_dim)  # Inner product for cosine similarity (with normalized vectors)
         self.chunk_mappings: List[Dict[str, Any]] = []  # Maps index to chunk metadata
         self.is_normalized = False
+        # Section index: maps section names to chunk indices
+        self.section_index: Dict[str, List[int]] = {}  # section_name -> list of chunk indices
     
     def normalize_index(self):
         """Normalize all vectors in the index for cosine similarity."""
@@ -60,13 +62,21 @@ class VectorStore:
         self.index.add(embeddings)
         self.is_normalized = True
         
-        # Add chunk mappings
+        # Add chunk mappings and build section index
         for i, chunk in enumerate(chunks):
+            chunk_idx = start_idx + i
             self.chunk_mappings.append({
-                'chunk_index': start_idx + i,
+                'chunk_index': chunk_idx,
                 'chunk_data': chunk,
                 'chunk_id': chunk.get('metadata', {}).get('k_number', 'unknown') + f"_chunk_{chunk.get('chunk_index', i)}"
             })
+            
+            # Index by section header if present
+            section_header = chunk.get('metadata', {}).get('section_header')
+            if section_header:
+                if section_header not in self.section_index:
+                    self.section_index[section_header] = []
+                self.section_index[section_header].append(chunk_idx)
     
     def add_sub_summary_embeddings(self, embeddings: np.ndarray, sub_summaries: List[Dict[str, Any]], linked_chunks: List[Dict[str, Any]]):
         """
@@ -148,11 +158,12 @@ class VectorStore:
         with open(f"{filepath}.mappings", 'wb') as f:
             pickle.dump(self.chunk_mappings, f)
         
-        # Save metadata
+        # Save metadata (including section index)
         metadata = {
             'embedding_dim': self.embedding_dim,
             'is_normalized': self.is_normalized,
-            'total_vectors': self.index.ntotal
+            'total_vectors': self.index.ntotal,
+            'section_index': self.section_index
         }
         with open(f"{filepath}.meta", 'wb') as f:
             pickle.dump(metadata, f)
@@ -178,8 +189,97 @@ class VectorStore:
             metadata = pickle.load(f)
             self.embedding_dim = metadata['embedding_dim']
             self.is_normalized = metadata['is_normalized']
+            # Load section index if present (for backwards compatibility)
+            self.section_index = metadata.get('section_index', {})
         
-        print(f"Vector store loaded from {filepath}.* ({self.index.ntotal} vectors)")
+        print(f"Vector store loaded from {filepath}.* ({self.index.ntotal} vectors, {len(self.section_index)} sections)")
+    
+    def get_sections(self) -> List[str]:
+        """
+        Get list of all section headers in the index.
+        
+        Returns:
+            List of section header names
+        """
+        return list(self.section_index.keys())
+    
+    def get_chunks_by_section(self, section_name: str) -> List[int]:
+        """
+        Get chunk indices for a specific section.
+        
+        Args:
+            section_name: Name of the section
+            
+        Returns:
+            List of chunk indices
+        """
+        return self.section_index.get(section_name, [])
+    
+    def search_by_sections(self, query_embedding: np.ndarray, section_names: List[str], k: int = 5) -> List[Tuple[Dict[str, Any], float]]:
+        """
+        Search for chunks within specific sections only.
+        
+        Args:
+            query_embedding: Query embedding vector
+            section_names: List of section names to search in
+            k: Number of results to return
+            
+        Returns:
+            List of tuples (chunk_data, similarity_score)
+        """
+        if self.index.ntotal == 0:
+            return []
+        
+        # Collect all chunk indices from specified sections
+        section_chunk_indices = set()
+        for section_name in section_names:
+            section_chunk_indices.update(self.section_index.get(section_name, []))
+        
+        if not section_chunk_indices:
+            return []
+        
+        # Normalize query embedding
+        query_embedding = query_embedding.astype('float32')
+        query_embedding = query_embedding.reshape(1, -1)
+        faiss.normalize_L2(query_embedding)
+        
+        # Extract vectors only for relevant sections
+        section_indices_list = sorted(list(section_chunk_indices))
+        if not section_indices_list:
+            return []
+        
+        # Reconstruct vectors for section chunks individually
+        section_vectors = []
+        for idx in section_indices_list:
+            if 0 <= idx < self.index.ntotal:
+                vec = self.index.reconstruct(int(idx))
+                section_vectors.append(vec)
+        
+        if not section_vectors:
+            return []
+        
+        section_vectors = np.array(section_vectors).astype('float32')
+        faiss.normalize_L2(section_vectors)
+        
+        # Create temporary index for section chunks only
+        temp_index = faiss.IndexFlatIP(self.embedding_dim)
+        temp_index.add(section_vectors)
+        
+        # Search in section chunks only
+        search_k = min(k, len(section_indices_list))
+        distances, local_indices = temp_index.search(query_embedding, search_k)
+        
+        # Map back to original indices and chunk data
+        results = []
+        for dist, local_idx in zip(distances[0], local_indices[0]):
+            if 0 <= local_idx < len(section_indices_list):
+                original_idx = section_indices_list[local_idx]
+                if original_idx < len(self.chunk_mappings):
+                    chunk_mapping = self.chunk_mappings[original_idx]
+                    similarity = float(dist)
+                    results.append((chunk_mapping['chunk_data'], similarity))
+        
+        return results
     
     def get_stats(self) -> Dict[str, Any]:
         """Get statistics about the vector store."""
@@ -187,6 +287,7 @@ class VectorStore:
             'total_vectors': self.index.ntotal,
             'embedding_dim': self.embedding_dim,
             'is_normalized': self.is_normalized,
-            'total_chunks': len(self.chunk_mappings)
+            'total_chunks': len(self.chunk_mappings),
+            'total_sections': len(self.section_index)
         }
 
