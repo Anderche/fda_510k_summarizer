@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
+.env
 
 # OS
 .DS_Store
@@ -23,3 +24,6 @@ ENV/
 corpus*/
 *.pdf
 
+
+
+/_REFERENCE
