@@ -7,6 +7,7 @@ Uses Claude API via Anthropic SDK.
 
 import os
 from typing import List, Dict, Optional, Any
+from reference_formatter import format_reference_string
 
 try:
     from anthropic import Anthropic
@@ -41,7 +42,7 @@ class LLMGenerator:
     LLM wrapper using Claude API for text generation tasks.
     """
     
-    def __init__(self, api_key: Optional[str] = None, model_name: str = "claude-3-5-sonnet-20241022"):
+    def __init__(self, api_key: Optional[str] = None, model_name: str = "claude-3-sonnet-20240229"):
         """
         Initialize LLM generator with Claude API.
         
@@ -127,8 +128,14 @@ Provide a concise summary (2-3 sentences) highlighting the most important inform
                 return f"Key information from this 510(k) document: {chunk_text[:200]}..."
         
         except Exception as e:
-            print(f"Error generating sub-summary: {e}")
-            return f"Key information from this 510(k) document: {chunk_text[:200]}..."
+            error_str = str(e)
+            # Check for specific error types
+            if '404' in error_str or 'not_found' in error_str.lower():
+                raise ValueError(f"Model '{self.model_name}' not found. Available models: claude-3-opus-20240229, claude-3-sonnet-20240229, claude-3-haiku-20240307. Try: --llm-model claude-3-sonnet-20240229")
+            elif '401' in error_str or 'unauthorized' in error_str.lower():
+                raise ValueError("API key invalid or missing. Check your ANTHROPIC_API_KEY.")
+            else:
+                raise e
     
     def generate_response(self, query: str, context_chunks: List[Dict[str, Any]], product_code: Optional[str] = None) -> str:
         """
@@ -142,7 +149,7 @@ Provide a concise summary (2-3 sentences) highlighting the most important inform
         Returns:
             Generated response text
         """
-        # Build context from chunks
+        # Build context from chunks with references
         context_parts = []
         total_length = 0
         max_context_length = 200000  # Claude 3.5 Sonnet has 200k context
@@ -151,13 +158,16 @@ Provide a concise summary (2-3 sentences) highlighting the most important inform
             chunk_text = chunk.get('text', '')
             k_number = chunk.get('metadata', {}).get('k_number', 'Unknown')
             
-            chunk_entry = f"Document {i} (K-number: {k_number}):\n{chunk_text}"
+            # Format reference
+            ref_str = format_reference_string(chunk, include_link=False)
+            
+            chunk_entry = f"Document {i} ({ref_str}):\n{chunk_text}"
             
             # Check if adding this chunk would exceed context limit
             if total_length + len(chunk_entry) > max_context_length:
                 # Truncate this chunk to fit
                 remaining = max_context_length - total_length - 500  # Safety margin
-                chunk_entry = f"Document {i} (K-number: {k_number}):\n{chunk_text[:remaining]}..."
+                chunk_entry = f"Document {i} ({ref_str}):\n{chunk_text[:remaining]}..."
             
             context_parts.append(chunk_entry)
             total_length += len(chunk_entry)
@@ -169,6 +179,7 @@ Provide a concise summary (2-3 sentences) highlighting the most important inform
         
         system_prompt = f"""You are an expert assistant helping users understand FDA 510(k) medical device submissions. 
 You answer questions based on retrieved 510(k) summary documents. Provide accurate, helpful answers based solely on the provided context.
+When referencing information, include the source reference (file, page, paragraph) from the document metadata.
 Product code context: {product_code or 'Not specified'}"""
 
         user_prompt = f"""Based on these FDA 510(k) submission summaries, answer the following question:
@@ -178,7 +189,7 @@ Question: {query}
 Relevant 510(k) Summaries:
 {context}
 
-Please provide a clear, comprehensive answer based on the information above. If the answer is not fully covered in the provided documents, indicate what information is missing."""
+Please provide a clear, comprehensive answer based on the information above. When citing specific information, reference the source document (file name, page, and paragraph) from the document metadata provided above. If the answer is not fully covered in the provided documents, indicate what information is missing."""
 
         try:
             message = self.client.messages.create(
@@ -225,8 +236,8 @@ class SimpleLLMGenerator:
         
         for i, chunk in enumerate(context_chunks[:3], 1):
             chunk_text = chunk.get('text', '')
-            k_number = chunk.get('metadata', {}).get('k_number', 'Unknown')
-            response_parts.append(f"\n\nRelevant information from K-number {k_number}:\n{chunk_text[:400]}")
+            ref_str = format_reference_string(chunk, include_link=False)
+            response_parts.append(f"\n\nRelevant information from {ref_str}:\n{chunk_text[:400]}")
         
         response_parts.append(f"\n\nRegarding your question '{query}', the above documents contain relevant information that may help answer it.")
         
