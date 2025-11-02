@@ -145,6 +145,15 @@ python query_rag.py rag_index --product-code DXN --use-llm
 - **Claude API Integration**: High-quality AI responses via Anthropic's Claude
 - **Fallback Mode**: Works without Claude API using template-based generation
 - **Evaluation Engine**: ROUGE and BLEU metrics for evaluating generated summaries
+- **FDA API Product Code Verification**: Automatic product code detection and FDA device classification lookup
+
+### FDA API Product Code Verification
+
+The system includes robust FDA Open API integration for automatic product code verification and device classification. When queries contain 3-character product codes (e.g., "NAY"), the system automatically validates these codes via the FDA's device classification API at `https://api.fda.gov/device/classification.json`. 
+
+The verification process features comprehensive error handling with separate exception types for network failures, parsing errors, and missing data. The implementation validates that API responses contain properly structured data arrays before extraction, ensuring robust handling of various response scenarios. When device information is successfully retrieved, the system extracts both `device_name` and `medical_specialty_description` fields, enriching query responses with specific device classification context.
+
+The code validates that `data['results']` is a list with items, extracts device information from the first result, and only returns data when `device_name` is present. Diagnostic warning messages provide clear feedback for different failure scenarios, helping users understand when API calls fail due to network issues, invalid product codes, or unexpected response structures. This enhancement significantly improves response accuracy by providing targeted regulatory context based on verified FDA device classifications.
 
 ## Evaluation
 

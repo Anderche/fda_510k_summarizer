@@ -11,6 +11,7 @@ from rag_retrieval import RAGRetriever
 from llm_integration import LLMGenerator, SimpleLLMGenerator
 from reference_formatter import format_multiple_references
 from query_enhancement import QueryEnhancer
+from ner_tfidf_extractor import NERTFIDFExtractor
 
 
 class QueryPipeline:
@@ -40,6 +41,7 @@ class QueryPipeline:
         self.use_query_expansion = use_query_expansion
         self.use_multi_query = use_multi_query
         self.query_enhancer = QueryEnhancer(embedding_generator, vector_store)
+        self.ner_tfidf_extractor = NERTFIDFExtractor()
     
     def _merge_results(self, all_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -94,30 +96,73 @@ class QueryPipeline:
         all_retrieved = []
         queries_used = [query]
         
-        # Step 1: Query expansion
+        # Step 1: Extract NER and TF-IDF from query
+        query_features = self.ner_tfidf_extractor.extract_query_features(query)
+        query_ner = query_features['ner_text']
+        query_tfidf = query_features['tfidf_text']
+        queries_used.append(f"NER: {query_ner}")
+        queries_used.append(f"TF-IDF: {query_tfidf}")
+        
+        # Step 2: Use NER/TF-IDF to find relevant sections via embedding similarity
+        # Combine NER entities and TF-IDF terms for section matching
+        section_query = f"{query} {query_ner} {query_tfidf}"
+        relevant_sections = self.retriever.find_relevant_sections(section_query, top_n=3, min_similarity=0.25)
+        sections_used = []
+        if relevant_sections:
+            sections_used = relevant_sections
+            queries_used.append(f"Matched sections: {', '.join(relevant_sections)}")
+            
+            # Find section start locations (first chunk of each section)
+            for section_name in relevant_sections[:1]:  # Focus on top section
+                section_start = self._find_section_start(section_name)
+                if section_start:
+                    queries_used.append(f"Section '{section_name}' starts at page {section_start.get('page_num', 'N/A')}, paragraph {section_start.get('para_index', 'N/A')}")
+        
+        # Step 3: Embed query and search sections (using metadata[section])
+        query_embedding = self.embedding_generator.embed_text(query)
+        if relevant_sections:
+            # Search within matched sections only
+            results = self.vector_store.search_by_sections(query_embedding, relevant_sections, k=k*2)
+            filtered_results = []
+            for chunk_data, similarity in results:
+                if similarity >= min_similarity:
+                    chunk_section = chunk_data.get('metadata', {}).get('section_header')
+                    # Boost similarity for chunks from the most relevant section
+                    if relevant_sections and chunk_section == relevant_sections[0]:
+                        similarity = min(similarity * 1.15, 1.0)  # Boost by 15%, cap at 1.0
+                    chunk_with_score = {
+                        **chunk_data,
+                        'similarity_score': similarity
+                    }
+                    filtered_results.append(chunk_with_score)
+            
+            # Re-sort by boosted similarity
+            filtered_results.sort(key=lambda x: x.get('similarity_score', 0.0), reverse=True)
+            all_retrieved.append({'retrieved_chunks': filtered_results})
+        else:
+            # Fallback: full search if no sections matched
+            all_retrieved.append({'retrieved_chunks': self.retriever.retrieve_with_context(
+                query, k=k*2, min_similarity=min_similarity, use_section_filtering=False
+            )})
+        
+        # Step 4: Query expansion (optional)
         expanded_query = query
         if self.use_query_expansion:
             expanded_query = self.query_enhancer.expand_query(query, top_n=5, similarity_threshold=0.6)
             if expanded_query != query:
                 queries_used.append(f"Expanded: {expanded_query}")
+                # Additional retrieval with expanded query
+                if relevant_sections:
+                    expanded_embedding = self.embedding_generator.embed_text(expanded_query)
+                    exp_results = self.vector_store.search_by_sections(expanded_embedding, relevant_sections, k=k)
+                    exp_filtered = []
+                    for chunk_data, similarity in exp_results:
+                        if similarity >= min_similarity:
+                            exp_filtered.append({**chunk_data, 'similarity_score': similarity})
+                    if exp_filtered:
+                        all_retrieved.append({'retrieved_chunks': exp_filtered})
         
-        # Step 2: Multi-query generation
-        query_variants = [expanded_query]
-        if self.use_multi_query:
-            if hasattr(self.llm_generator, 'client'):
-                variants = self.query_enhancer.generate_llm_query_variants(expanded_query, self.llm_generator, num_variants=3)
-            else:
-                variants = self.query_enhancer.generate_query_variants(expanded_query, num_variants=3)
-            query_variants.extend([v for v in variants if v != expanded_query])
-            queries_used.extend([f"Variant: {v}" for v in variants if v != expanded_query])
-        
-        # Step 3: Retrieve for each query variant
-        for q in query_variants:
-            retrieved = self.retriever.retrieve_with_context(q, k=k*2, min_similarity=min_similarity)
-            if retrieved:
-                all_retrieved.append({'retrieved_chunks': retrieved})
-        
-        # Step 4: Merge and deduplicate results
+        # Step 5: Merge and deduplicate results
         merged_chunks = self._merge_results(all_retrieved)
         retrieved = merged_chunks[:k]  # Take top k after merging
         
@@ -137,12 +182,36 @@ class QueryPipeline:
         # Step 5: Fetch linked full chunks as context
         context_chunks = [chunk for chunk in retrieved]
         
-        # Step 6: Augment LLM prompt with context and generate response
+        # Step 6: Collect section information from context chunks
+        context_sections = []
+        for chunk in context_chunks:
+            section = chunk.get('metadata', {}).get('section_header')
+            if section and section not in context_sections:
+                context_sections.append(section)
+        
+        # Step 7: Augment LLM prompt with context, NER, TF-IDF, and sections
         response = self.llm_generator.generate_response(
             query,
             context_chunks,
-            product_code=self.product_code
+            product_code=self.product_code,
+            query_ner=query_ner,
+            query_tfidf=query_tfidf,
+            context_sections=', '.join(context_sections) if context_sections else 'N/A'
         )
+        
+        # Step 8: Generate refined summary based on most relevant section and sub-summaries
+        refined_summary = None
+        if hasattr(self.llm_generator, 'generate_refined_summary'):
+            try:
+                refined_summary = self.llm_generator.generate_refined_summary(
+                    query,
+                    retrieved,  # Use all retrieved chunks for analysis
+                    vector_store=self.vector_store,
+                    ner_tfidf_extractor=self.ner_tfidf_extractor,
+                    product_code=self.product_code
+                )
+            except Exception as e:
+                print(f"Warning: Failed to generate refined summary: {e}")
         
         # Format references for each retrieved chunk
         references = format_multiple_references(retrieved, format_type="dict")
@@ -152,15 +221,47 @@ class QueryPipeline:
             'retrieved_chunks': retrieved,
             'references': references,
             'response': response,
+            'refined_summary': refined_summary,
             'metadata': {
                 'num_retrieved': len(retrieved),
                 'k': k,
                 'similarity_scores': [chunk.get('similarity_score', 0.0) for chunk in retrieved],
                 'queries_used': queries_used,
+                'sections_matched': sections_used,
                 'expansion_used': self.use_query_expansion,
                 'multi_query_used': self.use_multi_query
             }
         }
+    
+    def _find_section_start(self, section_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Find the first chunk (start location) of a section.
+        
+        Args:
+            section_name: Name of the section to find
+            
+        Returns:
+            Dictionary with metadata of the first chunk in the section, or None
+        """
+        section_chunk_indices = self.vector_store.get_chunks_by_section(section_name)
+        if not section_chunk_indices:
+            return None
+        
+        # Get the first chunk index (assuming indices are in order)
+        first_chunk_idx = min(section_chunk_indices)
+        
+        if first_chunk_idx < len(self.vector_store.chunk_mappings):
+            chunk_mapping = self.vector_store.chunk_mappings[first_chunk_idx]
+            chunk_data = chunk_mapping.get('chunk_data', {})
+            metadata = chunk_data.get('metadata', {})
+            
+            return {
+                'page_num': metadata.get('page_num'),
+                'para_index': metadata.get('para_index'),
+                'section_header': section_name
+            }
+        
+        return None
     
     def set_product_code(self, product_code: str):
         """Update product code for context."""

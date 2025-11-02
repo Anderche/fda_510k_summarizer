@@ -2,9 +2,10 @@
 RAG Retrieval Module
 
 Implements retrieval logic for finding relevant documents based on queries.
+Supports section-based retrieval for enhanced precision.
 """
 
-from typing import List, Dict, Tuple, Any
+from typing import List, Dict, Tuple, Any, Optional
 import numpy as np
 from embeddings import EmbeddingGenerator
 from vector_store import VectorStore
@@ -12,7 +13,7 @@ from vector_store import VectorStore
 
 class RAGRetriever:
     """
-    Retrieval component for RAG system.
+    Retrieval component for RAG system with section-based filtering.
     """
     
     def __init__(self, vector_store: VectorStore, embedding_generator: EmbeddingGenerator):
@@ -25,6 +26,62 @@ class RAGRetriever:
         """
         self.vector_store = vector_store
         self.embedding_generator = embedding_generator
+    
+    def find_relevant_sections(self, query: str, top_n: int = 3, min_similarity: float = 0.3) -> List[str]:
+        """
+        Find relevant sections for a query by embedding similarity and keyword matching.
+        
+        Args:
+            query: User query
+            top_n: Number of top sections to return
+            min_similarity: Minimum similarity threshold
+            
+        Returns:
+            List of section names
+        """
+        available_sections = self.vector_store.get_sections()
+        if not available_sections:
+            return []
+        
+        query_lower = query.lower()
+        
+        # Explicit keyword-to-section mapping for better detection
+        section_keywords = {
+            'Performance/Data': ['performance', 'data', 'testing', 'bench', 'validation', 'verification', 'testing', 'test', 'tests'],
+            'Testing': ['testing', 'test', 'tests', 'clinical', 'bench', 'protocol', 'validation', 'verification'],
+            'Device Details': ['device', 'description', 'equivalence', 'predicate', 'substantial'],
+            'Administrative Info': ['administrative', 'submission', 'filing', 'indication'],
+            'Public Info': ['summary', 'public', 'statement', '510k summary']
+        }
+        
+        # Embed query
+        query_embedding = self.embedding_generator.embed_text(query)
+        
+        # Embed each section name and compute similarity
+        section_similarities = []
+        for section_name in available_sections:
+            # Check explicit keyword matches first
+            keyword_boost = 0.0
+            keywords = section_keywords.get(section_name, [])
+            for keyword in keywords:
+                if keyword in query_lower:
+                    keyword_boost += 0.2  # Boost for each matching keyword
+            
+            section_embedding = self.embedding_generator.embed_text(section_name)
+            # Compute cosine similarity
+            similarity = np.dot(query_embedding, section_embedding) / (
+                np.linalg.norm(query_embedding) * np.linalg.norm(section_embedding)
+            )
+            
+            # Apply keyword boost
+            similarity = min(similarity + keyword_boost, 1.0)
+            
+            if similarity >= min_similarity:
+                section_similarities.append((section_name, float(similarity)))
+        
+        # Sort by similarity and return top N
+        section_similarities.sort(key=lambda x: x[1], reverse=True)
+        return [name for name, _ in section_similarities[:top_n]]
     
     def retrieve(self, query: str, k: int = 5) -> List[Tuple[Dict[str, Any], float]]:
         """
@@ -45,21 +102,33 @@ class RAGRetriever:
         
         return results
     
-    def retrieve_with_context(self, query: str, k: int = 5, min_similarity: float = 0.0) -> List[Dict[str, Any]]:
+    def retrieve_with_context(self, query: str, k: int = 5, min_similarity: float = 0.0, 
+                              use_section_filtering: bool = True) -> List[Dict[str, Any]]:
         """
-        Retrieve chunks with similarity filtering and formatted output.
+        Retrieve chunks with similarity filtering and optional section-based filtering.
         
         Args:
             query: User query text
             k: Number of results to retrieve
             min_similarity: Minimum similarity score threshold
+            use_section_filtering: Whether to first filter by relevant sections
             
         Returns:
             List of chunk dictionaries with similarity scores
         """
-        results = self.retrieve(query, k=k)
+        # Step 1: Find relevant sections if enabled
+        relevant_sections = []
+        if use_section_filtering:
+            relevant_sections = self.find_relevant_sections(query, top_n=3, min_similarity=0.25)
         
-        # Filter by minimum similarity and format
+        # Step 2: Retrieve from sections if found, otherwise full search
+        if relevant_sections:
+            query_embedding = self.embedding_generator.embed_text(query)
+            results = self.vector_store.search_by_sections(query_embedding, relevant_sections, k=k*2)
+        else:
+            results = self.retrieve(query, k=k*2)
+        
+        # Step 3: Filter by minimum similarity and format
         filtered_results = []
         for chunk_data, similarity in results:
             if similarity >= min_similarity:
@@ -69,5 +138,6 @@ class RAGRetriever:
                 }
                 filtered_results.append(chunk_with_score)
         
-        return filtered_results
+        # Return top k results
+        return filtered_results[:k]
 
