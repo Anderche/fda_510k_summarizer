@@ -28,7 +28,7 @@ from llm_integration import LLMGenerator, SimpleLLMGenerator
 def build_rag_index(corpus_dir: str, output_dir: str = "rag_index", 
                    chunk_size: int = 500, chunk_overlap: int = 50,
                    generate_sub_summaries: bool = True,
-                   use_llm: bool = False, llm_model: str = "claude-3-5-sonnet-20241022", api_key: str = None):
+                   use_llm: bool = False, llm_model: str = "claude-3-sonnet-20240229", api_key: str = None):
     """
     Build complete RAG index from corpus.
     
@@ -88,9 +88,17 @@ def build_rag_index(corpus_dir: str, output_dir: str = "rag_index",
                 except Exception as e:
                     print(f"  Warning loading .env: {e}")
                 llm = LLMGenerator(model_name=llm_model, api_key=api_key)
+                # Test the model with a simple call
+                test_result = llm.generate_sub_summary("Test", k_number="TEST")
+                if not test_result or "Error" in test_result:
+                    raise ValueError("Model test failed")
             except Exception as e:
-                print(f"  Error initializing Claude API: {e}")
-                print("  Falling back to simple template-based generator")
+                error_msg = str(e)
+                print(f"  Error initializing Claude API: {error_msg}")
+                if 'not found' in error_msg.lower() or '404' in error_msg:
+                    print(f"  Suggested fix: Use --llm-model claude-3-sonnet-20240229")
+                print(f"  Falling back to simple template-based generator")
+                print(f"  (You can skip LLM with --no-sub-summaries to build faster)")
                 llm = SimpleLLMGenerator()
         else:
             print("  Using simple template-based sub-summary generator")
@@ -99,18 +107,33 @@ def build_rag_index(corpus_dir: str, output_dir: str = "rag_index",
         sub_summaries = []
         linked_chunks = []
         
+        failed_count = 0
         for i, chunk in enumerate(chunks):
             if (i + 1) % 10 == 0:
                 print(f"  Processing chunk {i+1}/{len(chunks)}...")
             
-            k_number = chunk.get('metadata', {}).get('k_number', None)
-            sub_summary_text = llm.generate_sub_summary(chunk['text'], k_number=k_number)
-            
-            sub_summaries.append({
-                'text': sub_summary_text,
-                'source_chunk_index': chunk.get('chunk_index', i)
-            })
-            linked_chunks.append(chunk)
+            try:
+                k_number = chunk.get('metadata', {}).get('k_number', None)
+                sub_summary_text = llm.generate_sub_summary(chunk['text'], k_number=k_number)
+                
+                sub_summaries.append({
+                    'text': sub_summary_text,
+                    'source_chunk_index': chunk.get('chunk_index', i)
+                })
+                linked_chunks.append(chunk)
+            except Exception as e:
+                failed_count += 1
+                if failed_count <= 3:  # Only show first few errors
+                    print(f"  Warning: Failed to generate sub-summary for chunk {i+1}: {e}")
+                # Fallback: use chunk text itself as sub-summary
+                sub_summaries.append({
+                    'text': f"Key information from this 510(k) document: {chunk['text'][:200]}...",
+                    'source_chunk_index': chunk.get('chunk_index', i)
+                })
+                linked_chunks.append(chunk)
+        
+        if failed_count > 0:
+            print(f"  Warning: {failed_count} sub-summaries failed to generate, using fallback")
         
         print(f"  Generated {len(sub_summaries)} sub-summaries")
         
@@ -151,7 +174,7 @@ if __name__ == "__main__":
     parser.add_argument('--chunk-overlap', type=int, default=50, help='Chunk overlap in tokens (default: 50)')
     parser.add_argument('--no-sub-summaries', action='store_true', help='Disable sub-summary generation')
     parser.add_argument('--use-llm', action='store_true', help='Use Claude API for sub-summaries (requires ANTHROPIC_API_KEY)')
-    parser.add_argument('--llm-model', default='claude-3-5-sonnet-20241022', help='Claude model name')
+    parser.add_argument('--llm-model', default='claude-3-sonnet-20240229', help='Claude model name')
     parser.add_argument('--api-key', default=None, help='Anthropic API key (defaults to ANTHROPIC_API_KEY env var)')
     
     args = parser.parse_args()

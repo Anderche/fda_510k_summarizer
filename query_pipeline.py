@@ -9,6 +9,7 @@ from embeddings import EmbeddingGenerator
 from vector_store import VectorStore
 from rag_retrieval import RAGRetriever
 from llm_integration import LLMGenerator, SimpleLLMGenerator
+from reference_formatter import format_multiple_references
 
 
 class QueryPipeline:
@@ -72,9 +73,13 @@ class QueryPipeline:
             product_code=self.product_code
         )
         
+        # Format references for each retrieved chunk
+        references = format_multiple_references(retrieved, format_type="dict")
+        
         return {
             'query': query,
             'retrieved_chunks': retrieved,
+            'references': references,
             'response': response,
             'metadata': {
                 'num_retrieved': len(retrieved),

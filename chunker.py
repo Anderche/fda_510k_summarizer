@@ -196,15 +196,73 @@ class DocumentChunker:
         
         return overlap if overlap else [sentences[-1]]  # Return at least last sentence
     
-    def chunk_documents(self, documents: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+    def _map_chunk_to_source(self, chunk_text: str, pages_data: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """
-        Chunk a list of documents.
+        Map a chunk back to its source page and paragraph.
         
         Args:
-            documents: List of documents with 'k_number', 'file_path', and 'text' keys
+            chunk_text: Text content of the chunk
+            pages_data: List of page data with paragraphs
             
         Returns:
-            List of all chunks with metadata
+            Dictionary with 'page_num' and 'para_index', or None if not found
+        """
+        # Normalize chunk text for matching (remove extra whitespace)
+        chunk_normalized = ' '.join(chunk_text.split())
+        chunk_words = set(chunk_normalized.lower().split())
+        
+        best_match = None
+        best_score = 0
+        
+        # Search through all pages and paragraphs
+        for page_data in pages_data:
+            for para in page_data['paragraphs']:
+                para_normalized = ' '.join(para['text'].split())
+                para_words = set(para_normalized.lower().split())
+                
+                # Calculate overlap score
+                if chunk_words and para_words:
+                    overlap = len(chunk_words & para_words)
+                    total = len(chunk_words | para_words)
+                    score = overlap / total if total > 0 else 0
+                    
+                    # Also check if chunk is a substring of paragraph (or vice versa)
+                    if chunk_normalized.lower() in para_normalized.lower() or para_normalized.lower() in chunk_normalized.lower():
+                        score = max(score, 0.8)
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_match = {
+                            'page_num': page_data['page_num'],
+                            'para_index': para['para_index']
+                        }
+        
+        # Return match if score is reasonable (at least 30% overlap)
+        if best_match and best_score >= 0.3:
+            return best_match
+        
+        # Fallback: find first paragraph that contains any substantial part of the chunk
+        chunk_first_words = chunk_normalized[:100].lower()
+        for page_data in pages_data:
+            for para in page_data['paragraphs']:
+                para_normalized = ' '.join(para['text'].split())
+                if chunk_first_words in para_normalized.lower()[:200]:
+                    return {
+                        'page_num': page_data['page_num'],
+                        'para_index': para['para_index']
+                    }
+        
+        return None
+    
+    def chunk_documents(self, documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Chunk a list of documents with page and paragraph tracking.
+        
+        Args:
+            documents: List of documents with 'k_number', 'file_path', 'text', and optionally 'pages_data' keys
+            
+        Returns:
+            List of all chunks with metadata including page and paragraph info
         """
         all_chunks = []
         
@@ -212,13 +270,14 @@ class DocumentChunker:
             metadata = {
                 'k_number': doc.get('k_number'),
                 'file_path': doc.get('file_path'),
+                'file_name': doc.get('file_name', doc.get('file_path', '').split('/')[-1] if doc.get('file_path') else ''),
                 'source_document': doc.get('k_number')
             }
             
             chunks = self.chunk_text(doc['text'], metadata)
+            pages_data = doc.get('pages_data', [])
             
-            # Filter chunks that don't contain meaningful content
-            # (e.g., mostly headers, numbers, or very repetitive)
+            # Map each chunk to its source page and paragraph
             for chunk in chunks:
                 text = chunk['text']
                 
@@ -233,6 +292,13 @@ class DocumentChunker:
                     unique_ratio = len(set(words)) / len(words)
                     if unique_ratio < 0.3:  # More than 70% repetitive
                         continue
+                
+                # Map chunk to source page and paragraph
+                if pages_data:
+                    source_info = self._map_chunk_to_source(text, pages_data)
+                    if source_info:
+                        chunk['metadata']['page_num'] = source_info['page_num']
+                        chunk['metadata']['para_index'] = source_info['para_index']
                 
                 all_chunks.append(chunk)
         

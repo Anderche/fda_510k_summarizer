@@ -70,7 +70,7 @@ python build_rag_index.py corpus_DXN --output-dir rag_index --use-llm
 - `--use-llm` - Use Claude API for generating sub-summaries (recommended for better quality)
 - `--chunk-size` - Chunk size in tokens (default: 500)
 - `--chunk-overlap` - Chunk overlap in tokens (default: 50)
-- `--llm-model` - Claude model name (default: `claude-3-5-sonnet-20241022`)
+- `--llm-model` - Claude model name (default: `claude-3-5-sonnet`)
 - `--no-sub-summaries` - Disable multi-vector RAG (faster but less accurate)
 
 **Example:**
@@ -94,7 +94,7 @@ python query_rag.py rag_index --product-code DXN --use-llm
 - `rag_index` - Directory containing RAG index files
 - `--product-code` - Product code for context in responses
 - `--use-llm` - Use Claude API for generating responses (recommended)
-- `--llm-model` - Claude model name (default: `claude-3-5-sonnet-20241022`)
+- `--llm-model` - Claude model name (default: `claude-3-5-sonnet`)
 - `--query` - Single query (non-interactive mode)
 - `-k` - Number of chunks to retrieve (default: 5)
 
@@ -155,12 +155,14 @@ The system reads from `.env` file or environment:
 
 ### Claude Models
 
-Default: `claude-3-5-sonnet-20241022`
+Default: `claude-3-sonnet-20240229`
 
-Other available models:
+If you get 404 errors, try these known working models:
+- `claude-3-sonnet-20240229` (recommended fallback)
 - `claude-3-opus-20240229`
-- `claude-3-sonnet-20240229`
 - `claude-3-haiku-20240307`
+
+**Note:** If models aren't available, the system will automatically fallback to template-based generation.
 
 ## File Structure
 
