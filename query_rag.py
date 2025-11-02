@@ -6,6 +6,18 @@ Interactive script to query the built RAG index.
 
 import os
 import argparse
+
+# Load .env file if available
+try:
+    from dotenv import load_dotenv
+    import os
+    # Load from project root
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+    load_dotenv(dotenv_path=env_path)
+    # Also try loading from current working directory
+    load_dotenv()
+except ImportError:
+    pass  # dotenv not installed, skip loading .env
 from embeddings import EmbeddingGenerator
 from vector_store import VectorStore
 from query_pipeline import QueryPipeline
@@ -13,7 +25,7 @@ from llm_integration import LLMGenerator, SimpleLLMGenerator
 
 
 def load_rag_system(index_dir: str, product_code: str = None, use_llm: bool = False, 
-                    llm_model: str = "meta-llama/Llama-2-7b-chat-hf"):
+                    llm_model: str = "claude-3-5-sonnet-20241022", api_key: str = None):
     """
     Load RAG system from saved index.
     
@@ -38,8 +50,36 @@ def load_rag_system(index_dir: str, product_code: str = None, use_llm: bool = Fa
     
     # Initialize LLM generator
     if use_llm:
-        llm_generator = LLMGenerator(model_name=llm_model)
+        try:
+            print(f"Initializing Claude API with model: {llm_model}")
+            # Re-ensure .env is loaded before initializing
+            try:
+                from dotenv import load_dotenv
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                env_path = os.path.join(script_dir, '.env')
+                if os.path.exists(env_path):
+                    load_dotenv(dotenv_path=env_path, override=True)
+                    print(f"Loaded .env from: {env_path}")
+                cwd_env = os.path.join(os.getcwd(), '.env')
+                if os.path.exists(cwd_env):
+                    load_dotenv(dotenv_path=cwd_env, override=True)
+                    print(f"Loaded .env from: {cwd_env}")
+                load_dotenv(override=True)
+                # Debug: check if key was loaded
+                api_key_from_env = os.getenv("ANTHROPIC_API_KEY")
+                if api_key_from_env:
+                    print(f"API key loaded from environment (length: {len(api_key_from_env)})")
+                else:
+                    print("Warning: ANTHROPIC_API_KEY not found in environment after loading .env")
+            except Exception as e:
+                print(f"Warning: Error loading .env: {e}")
+            llm_generator = LLMGenerator(model_name=llm_model, api_key=api_key)
+        except Exception as e:
+            print(f"Error initializing Claude API: {e}")
+            print("Falling back to simple template-based generator")
+            llm_generator = SimpleLLMGenerator()
     else:
+        print("Using simple template-based generator (no Claude API)")
         llm_generator = SimpleLLMGenerator()
     
     # Create query pipeline
@@ -95,8 +135,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Query FDA 510(k) RAG system')
     parser.add_argument('index_dir', help='Directory containing RAG index files')
     parser.add_argument('--product-code', help='Product code for context')
-    parser.add_argument('--use-llm', action='store_true', help='Use full LLM for responses')
-    parser.add_argument('--llm-model', default='meta-llama/Llama-2-7b-chat-hf', help='LLM model name')
+    parser.add_argument('--use-llm', action='store_true', help='Use Claude API for responses (requires ANTHROPIC_API_KEY)')
+    parser.add_argument('--llm-model', default='claude-3-5-sonnet-20241022', help='Claude model name')
+    parser.add_argument('--api-key', default=None, help='Anthropic API key (defaults to ANTHROPIC_API_KEY env var)')
     parser.add_argument('--query', help='Single query to process (non-interactive mode)')
     parser.add_argument('-k', type=int, default=5, help='Number of chunks to retrieve')
     
@@ -106,7 +147,8 @@ if __name__ == "__main__":
         index_dir=args.index_dir,
         product_code=args.product_code,
         use_llm=args.use_llm,
-        llm_model=args.llm_model
+        llm_model=args.llm_model,
+        api_key=args.api_key
     )
     
     if args.query:

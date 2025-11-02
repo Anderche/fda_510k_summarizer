@@ -6,6 +6,18 @@ Orchestrates the complete pipeline to build the RAG index from corpus PDFs.
 
 import os
 import argparse
+
+# Load .env file if available
+try:
+    from dotenv import load_dotenv
+    import os
+    # Load from project root
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+    load_dotenv(dotenv_path=env_path)
+    # Also try loading from current working directory
+    load_dotenv()
+except ImportError:
+    pass  # dotenv not installed, skip loading .env
 from pdf_extractor import extract_text_from_corpus
 from chunker import DocumentChunker
 from embeddings import EmbeddingGenerator
@@ -16,7 +28,7 @@ from llm_integration import LLMGenerator, SimpleLLMGenerator
 def build_rag_index(corpus_dir: str, output_dir: str = "rag_index", 
                    chunk_size: int = 500, chunk_overlap: int = 50,
                    generate_sub_summaries: bool = True,
-                   use_llm: bool = False, llm_model: str = "meta-llama/Llama-2-7b-chat-hf"):
+                   use_llm: bool = False, llm_model: str = "claude-3-5-sonnet-20241022", api_key: str = None):
     """
     Build complete RAG index from corpus.
     
@@ -63,8 +75,23 @@ def build_rag_index(corpus_dir: str, output_dir: str = "rag_index",
         
         # Initialize LLM generator
         if use_llm:
-            print(f"  Using LLM model: {llm_model}")
-            llm = LLMGenerator(model_name=llm_model)
+            print(f"  Using Claude API model: {llm_model}")
+            try:
+                # Re-ensure .env is loaded
+                try:
+                    from dotenv import load_dotenv
+                    script_dir = os.path.dirname(os.path.abspath(__file__))
+                    env_path = os.path.join(script_dir, '.env')
+                    if os.path.exists(env_path):
+                        load_dotenv(dotenv_path=env_path, override=True)
+                    load_dotenv(override=True)
+                except Exception as e:
+                    print(f"  Warning loading .env: {e}")
+                llm = LLMGenerator(model_name=llm_model, api_key=api_key)
+            except Exception as e:
+                print(f"  Error initializing Claude API: {e}")
+                print("  Falling back to simple template-based generator")
+                llm = SimpleLLMGenerator()
         else:
             print("  Using simple template-based sub-summary generator")
             llm = SimpleLLMGenerator()
@@ -123,8 +150,9 @@ if __name__ == "__main__":
     parser.add_argument('--chunk-size', type=int, default=500, help='Chunk size in tokens (default: 500)')
     parser.add_argument('--chunk-overlap', type=int, default=50, help='Chunk overlap in tokens (default: 50)')
     parser.add_argument('--no-sub-summaries', action='store_true', help='Disable sub-summary generation')
-    parser.add_argument('--use-llm', action='store_true', help='Use full LLM for sub-summaries (requires model download)')
-    parser.add_argument('--llm-model', default='meta-llama/Llama-2-7b-chat-hf', help='LLM model name')
+    parser.add_argument('--use-llm', action='store_true', help='Use Claude API for sub-summaries (requires ANTHROPIC_API_KEY)')
+    parser.add_argument('--llm-model', default='claude-3-5-sonnet-20241022', help='Claude model name')
+    parser.add_argument('--api-key', default=None, help='Anthropic API key (defaults to ANTHROPIC_API_KEY env var)')
     
     args = parser.parse_args()
     
@@ -135,6 +163,7 @@ if __name__ == "__main__":
         chunk_overlap=args.chunk_overlap,
         generate_sub_summaries=not args.no_sub_summaries,
         use_llm=args.use_llm,
-        llm_model=args.llm_model
+        llm_model=args.llm_model,
+        api_key=args.api_key
     )
 

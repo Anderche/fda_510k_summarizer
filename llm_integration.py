@@ -2,59 +2,88 @@
 LLM Integration Module
 
 Handles LLM interactions for sub-summary generation and query responses.
-Uses Hugging Face Transformers with local models (Llama-2 or similar).
+Uses Claude API via Anthropic SDK.
 """
 
-from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+import os
 from typing import List, Dict, Optional, Any
-import torch
+
+try:
+    from anthropic import Anthropic
+    ANTHROPIC_AVAILABLE = True
+except ImportError:
+    ANTHROPIC_AVAILABLE = False
+    print("Warning: anthropic package not installed. Install with: pip install anthropic")
+
+try:
+    from dotenv import load_dotenv
+    import os
+    # Load .env file from multiple locations
+    # 1. Try script's directory (project root)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    env_path = os.path.join(script_dir, '.env')
+    if os.path.exists(env_path):
+        load_dotenv(dotenv_path=env_path, override=True)
+    # 2. Try current working directory
+    cwd_env = os.path.join(os.getcwd(), '.env')
+    if os.path.exists(cwd_env):
+        load_dotenv(dotenv_path=cwd_env, override=True)
+    # 3. Try loading without path (dotenv searches automatically)
+    load_dotenv(override=True)
+except ImportError:
+    pass  # dotenv not installed, skip loading .env
+except Exception as e:
+    print(f"Warning: Error loading .env file: {e}")
 
 
 class LLMGenerator:
     """
-    LLM wrapper for text generation tasks.
+    LLM wrapper using Claude API for text generation tasks.
     """
     
-    def __init__(self, model_name: str = "meta-llama/Llama-2-7b-chat-hf", device: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, model_name: str = "claude-3-5-sonnet-20241022"):
         """
-        Initialize LLM generator.
+        Initialize LLM generator with Claude API.
         
         Args:
-            model_name: Hugging Face model identifier
-            device: Device to run on ('cuda', 'cpu', or None for auto)
+            api_key: Anthropic API key (defaults to ANTHROPIC_API_KEY env var)
+            model_name: Claude model name (default: claude-3-5-sonnet-20241022)
         """
+        if not ANTHROPIC_AVAILABLE:
+            raise ImportError("anthropic package is required. Install with: pip install anthropic")
+        
+        # Try to get API key from parameter, then env var
+        self.api_key = api_key
+        if not self.api_key:
+            self.api_key = os.getenv("ANTHROPIC_API_KEY")
+        
+        if not self.api_key:
+            # Provide helpful debug info
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            cwd = os.getcwd()
+            env_locations = [
+                os.path.join(script_dir, '.env'),
+                os.path.join(cwd, '.env'),
+                '.env'
+            ]
+            found_env = [loc for loc in env_locations if os.path.exists(loc)]
+            
+            error_msg = (
+                "ANTHROPIC_API_KEY environment variable not set.\n"
+                "  - Set it in .env file (ANTHROPIC_API_KEY=your-key)\n"
+                "  - Or export ANTHROPIC_API_KEY='your-key-here'\n"
+            )
+            if found_env:
+                error_msg += f"  - Found .env files at: {', '.join(found_env)}\n"
+            else:
+                error_msg += f"  - Searched for .env in: {', '.join(env_locations)}\n"
+            
+            raise ValueError(error_msg)
+        
         self.model_name = model_name
-        self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
+        self.client = Anthropic(api_key=self.api_key)
         
-        print(f"Loading LLM model: {model_name} on {self.device}...")
-        
-        try:
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                torch_dtype=torch.float16 if self.device == 'cuda' else torch.float32,
-                device_map='auto' if self.device == 'cuda' else None,
-                low_cpu_mem_usage=True
-            )
-            
-            if self.device == 'cpu':
-                self.model = self.model.to(self.device)
-            
-            # Create text generation pipeline
-            self.generator = pipeline(
-                "text-generation",
-                model=self.model,
-                tokenizer=self.tokenizer,
-                device=0 if self.device == 'cuda' else -1
-            )
-            
-            print(f"LLM model loaded successfully.")
-        except Exception as e:
-            print(f"Warning: Could not load {model_name}. Error: {e}")
-            print("Falling back to a simpler approach. For production, ensure model is available.")
-            self.model = None
-            self.tokenizer = None
-            self.generator = None
+        print(f"Claude API initialized with model: {model_name}")
     
     def generate_sub_summary(self, chunk_text: str, k_number: Optional[str] = None) -> str:
         """
@@ -67,26 +96,36 @@ class LLMGenerator:
         Returns:
             Generated sub-summary text
         """
-        if not self.generator:
-            # Fallback: return a simple template-based summary
-            return f"Key information from this 510(k) document: {chunk_text[:200]}..."
+        # Truncate chunk if too long (Claude has context limits)
+        max_chunk_length = 8000  # Leave room for prompt
+        if len(chunk_text) > max_chunk_length:
+            chunk_text = chunk_text[:max_chunk_length] + "..."
         
-        prompt = f"""Summarize the key information from this FDA 510(k) document excerpt:
-
-{chunk_text[:1000]}
-
-Summary:"""
+        system_prompt = "You are a helpful assistant that summarizes FDA 510(k) medical device submission documents."
         
+        user_prompt = f"""Summarize the key information from this FDA 510(k) document excerpt{f' (K-number: {k_number})' if k_number else ''}:
+
+{chunk_text}
+
+Provide a concise summary (2-3 sentences) highlighting the most important information:"""
+
         try:
-            result = self.generator(
-                prompt,
-                max_new_tokens=150,
+            message = self.client.messages.create(
+                model=self.model_name,
+                max_tokens=200,
                 temperature=0.7,
-                do_sample=True,
-                top_p=0.9,
-                return_full_text=False
+                system=system_prompt,
+                messages=[
+                    {"role": "user", "content": user_prompt}
+                ]
             )
-            return result[0]['generated_text'].strip()
+            
+            # Extract text from response
+            if message.content and len(message.content) > 0:
+                return message.content[0].text.strip()
+            else:
+                return f"Key information from this 510(k) document: {chunk_text[:200]}..."
+        
         except Exception as e:
             print(f"Error generating sub-summary: {e}")
             return f"Key information from this 510(k) document: {chunk_text[:200]}..."
@@ -103,39 +142,63 @@ Summary:"""
         Returns:
             Generated response text
         """
-        if not self.generator:
-            # Fallback: return a simple response
-            context_text = "\n\n".join([chunk.get('text', '')[:500] for chunk in context_chunks[:3]])
-            return f"Based on the retrieved 510(k) documents: {context_text[:500]}..."
-        
         # Build context from chunks
         context_parts = []
-        for i, chunk in enumerate(context_chunks[:5], 1):
+        total_length = 0
+        max_context_length = 200000  # Claude 3.5 Sonnet has 200k context
+        
+        for i, chunk in enumerate(context_chunks[:10], 1):  # Limit to top 10 chunks
             chunk_text = chunk.get('text', '')
             k_number = chunk.get('metadata', {}).get('k_number', 'Unknown')
-            context_parts.append(f"Document {i} (K-number: {k_number}):\n{chunk_text[:800]}")
+            
+            chunk_entry = f"Document {i} (K-number: {k_number}):\n{chunk_text}"
+            
+            # Check if adding this chunk would exceed context limit
+            if total_length + len(chunk_entry) > max_context_length:
+                # Truncate this chunk to fit
+                remaining = max_context_length - total_length - 500  # Safety margin
+                chunk_entry = f"Document {i} (K-number: {k_number}):\n{chunk_text[:remaining]}..."
+            
+            context_parts.append(chunk_entry)
+            total_length += len(chunk_entry)
+            
+            if total_length >= max_context_length:
+                break
         
         context = "\n\n".join(context_parts)
         
-        prompt = f"""Based on these FDA 510(k) submission summaries for product code {product_code or 'specified devices'}, answer the following question:
+        system_prompt = f"""You are an expert assistant helping users understand FDA 510(k) medical device submissions. 
+You answer questions based on retrieved 510(k) summary documents. Provide accurate, helpful answers based solely on the provided context.
+Product code context: {product_code or 'Not specified'}"""
+
+        user_prompt = f"""Based on these FDA 510(k) submission summaries, answer the following question:
 
 Question: {query}
 
 Relevant 510(k) Summaries:
 {context}
 
-Answer:"""
-        
+Please provide a clear, comprehensive answer based on the information above. If the answer is not fully covered in the provided documents, indicate what information is missing."""
+
         try:
-            result = self.generator(
-                prompt,
-                max_new_tokens=300,
+            message = self.client.messages.create(
+                model=self.model_name,
+                max_tokens=1024,
                 temperature=0.7,
-                do_sample=True,
-                top_p=0.9,
-                return_full_text=False
+                system=system_prompt,
+                messages=[
+                    {"role": "user", "content": user_prompt}
+                ]
             )
-            return result[0]['generated_text'].strip()
+            
+            # Extract text from response
+            if message.content and len(message.content) > 0:
+                return message.content[0].text.strip()
+            else:
+                # Fallback response
+                context_text = "\n\n".join([chunk.get('text', '')[:300] for chunk in context_chunks[:3]])
+                return f"Based on the retrieved FDA 510(k) documents:\n\n{context_text}"
+        
         except Exception as e:
             print(f"Error generating response: {e}")
             # Fallback response
@@ -145,8 +208,8 @@ Answer:"""
 
 class SimpleLLMGenerator:
     """
-    Lightweight fallback LLM generator that doesn't require a large model.
-    Useful for development and testing when full LLM isn't available.
+    Lightweight fallback LLM generator that doesn't require an API.
+    Useful for development and testing when Claude API isn't available.
     """
     
     def generate_sub_summary(self, chunk_text: str, k_number: Optional[str] = None) -> str:
@@ -168,4 +231,3 @@ class SimpleLLMGenerator:
         response_parts.append(f"\n\nRegarding your question '{query}', the above documents contain relevant information that may help answer it.")
         
         return "\n".join(response_parts)
-
