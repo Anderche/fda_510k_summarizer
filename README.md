@@ -144,6 +144,61 @@ python query_rag.py rag_index --product-code DXN --use-llm
 - **Semantic Chunking**: Sentence-aware chunking preserves document structure
 - **Claude API Integration**: High-quality AI responses via Anthropic's Claude
 - **Fallback Mode**: Works without Claude API using template-based generation
+- **Evaluation Engine**: ROUGE and BLEU metrics for evaluating generated summaries
+
+## Evaluation
+
+The system includes an evaluation engine for measuring summary quality using ROUGE and BLEU metrics.
+
+### Using the Evaluation Engine
+
+```python
+from eval_engine import EvalEngine
+
+# Initialize engine
+engine = EvalEngine()
+
+# Evaluate a single candidate-reference pair
+candidate = "Generated summary text here..."
+reference = "Reference/ground truth text here..."
+results = engine.evaluate(candidate, reference)
+print(engine.format_results(results))
+
+# Batch evaluation
+candidates = ["summary1", "summary2", "summary3"]
+references = ["ref1", "ref2", "ref3"]
+batch_results = engine.evaluate_batch(candidates, references)
+print(engine.format_results(batch_results))
+```
+
+### Metrics
+
+- **ROUGE**: ROUGE-1, ROUGE-2, ROUGE-L, and ROUGE-Lsum with precision, recall, and F-measure
+- **BLEU**: BLEU-1 through BLEU-4 n-gram precision scores and overall BLEU score
+
+### CSV-Based Evaluation
+
+The evaluation engine supports CSV-based evaluation where queries are processed through the RAG pipeline and compared against expected responses.
+
+**Instructions:**
+1. Create `eval_template.csv` with `query` and `expected_response` columns
+2. Add your test queries and expected answers (one per row)
+3. Run: `python run_eval_from_csv.py eval_template.csv --index-dir rag_index --use-llm`
+4. Review ROUGE/BLEU scores comparing generated vs expected responses
+
+**Example CSV format:**
+```csv
+query,expected_response
+What tests are needed for 510k submission?,A 510(k) submission requires non-clinical bench testing...
+What is substantial equivalence?,Substantial equivalence means the device has...
+```
+
+### Testing
+
+Run the evaluation engine test script:
+```bash
+python test_eval_engine.py
+```
 
 ## Configuration
 
@@ -171,6 +226,10 @@ app_fda_510k_summarizer/
 ├── get_510k_summary.py      # Download PDFs from openFDA
 ├── build_rag_index.py        # Build RAG index
 ├── query_rag.py              # Query RAG system
+├── eval_engine.py            # ROUGE/BLEU evaluation engine
+├── eval_template.csv         # Template CSV for evaluation (query, expected_response)
+├── run_eval_from_csv.py      # Run evaluation from CSV file
+├── test_eval_engine.py       # Evaluation engine test script
 ├── pdf_extractor.py          # PDF text extraction
 ├── chunker.py                # Document chunking
 ├── embeddings.py             # Vector embeddings

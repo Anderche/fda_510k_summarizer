@@ -123,6 +123,13 @@ def interactive_query(pipeline: QueryPipeline):
         print(result['response'])
         print("\n" + "-" * 80)
         print(f"Retrieved {result['metadata']['num_retrieved']} relevant documents")
+        
+        # Show query enhancement info if available
+        if result.get('metadata', {}).get('queries_used'):
+            print(f"\nQuery enhancements:")
+            for q_info in result['metadata']['queries_used'][:3]:
+                print(f"  - {q_info}")
+        
         if result.get('references'):
             print("\nReferences:")
             for i, chunk in enumerate(result['retrieved_chunks'][:5], 1):
@@ -165,6 +172,13 @@ if __name__ == "__main__":
         print("\nResponse:")
         print(result['response'])
         print(f"\nRetrieved {result['metadata']['num_retrieved']} documents")
+        
+        # Show query enhancement info if available
+        if result.get('metadata', {}).get('queries_used'):
+            print(f"\nQuery enhancements:")
+            for q_info in result['metadata']['queries_used'][:3]:
+                print(f"  - {q_info}")
+        
         if result.get('references'):
             print("\nReferences:")
             for i, chunk in enumerate(result['retrieved_chunks'][:5], 1):
