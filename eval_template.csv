@@ -1,0 +1,4 @@
+query,expected_response
+What tests are needed for 510k submission?,A 510(k) submission requires non-clinical bench testing, biocompatibility testing, and clinical studies demonstrating substantial equivalence to a predicate device.
+What is substantial equivalence?,Substantial equivalence means the device has the same intended use and technological characteristics, or has different characteristics but does not raise new safety or effectiveness questions.
+
