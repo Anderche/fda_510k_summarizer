@@ -131,7 +131,7 @@ class RAGRetriever:
                     # Convert distance to similarity
                     similarity = max(0.0, 1.0 / (1.0 + float(score)))
                     results.append((chunk_data, similarity))
-            
+        
             return results[:k]
         else:
             return []

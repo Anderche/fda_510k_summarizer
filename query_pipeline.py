@@ -278,7 +278,7 @@ Answer:"""
         if relevant_sections:
             sections_used = relevant_sections
             queries_used.append(f"Matched sections: {', '.join(relevant_sections)}")
-        
+            
         # Step 3: Search sections or full index (using query text for LangChain)
         if relevant_sections:
             # Use text-based search which works better with LangChain
