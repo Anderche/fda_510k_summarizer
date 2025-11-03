@@ -18,7 +18,8 @@ def print_metadata(index_dir: str = "rag_index"):
     """
     index_path = os.path.join(index_dir, "vector_index")
     
-    if not os.path.exists(f"{index_path}.index"):
+    # LangChain FAISS saves as a directory, old format saved as .index file
+    if not os.path.exists(index_path) and not os.path.exists(f"{index_path}.index"):
         print(f"Error: Index not found at {index_path}")
         print("Please build the index first using: python build_rag_index.py corpus_NAY/")
         return
