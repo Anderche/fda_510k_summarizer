@@ -242,11 +242,26 @@ Answer:"""
             if not response_text.strip().startswith("SUMMARY:"):
                 response_text = "SUMMARY:\n" + response_text
             
+            # Generate refined summary if supported
+            refined_summary = None
+            if hasattr(self.llm_generator, 'generate_refined_summary') and retrieved_chunks:
+                try:
+                    refined_summary = self.llm_generator.generate_refined_summary(
+                        query=query,
+                        context_chunks=retrieved_chunks,
+                        vector_store=self.vector_store,
+                        ner_tfidf_extractor=self.ner_tfidf_extractor,
+                        product_code=self.product_code
+                    )
+                except Exception as e:
+                    print(f"Error generating refined summary: {e}")
+            
             return {
                 'query': query,
                 'retrieved_chunks': retrieved_chunks,
                 'references': references,
                 'response': response_text,
+                'refined_summary': refined_summary,
                 'metadata': {
                     'num_retrieved': len(retrieved_chunks),
                     'k': k,
@@ -347,11 +362,26 @@ Answer:"""
         # Format references
         references = format_multiple_references(retrieved, format_type="dict")
         
+        # Generate refined summary if supported
+        refined_summary = None
+        if hasattr(self.llm_generator, 'generate_refined_summary') and retrieved:
+            try:
+                refined_summary = self.llm_generator.generate_refined_summary(
+                    query=query,
+                    context_chunks=context_chunks,
+                    vector_store=self.vector_store,
+                    ner_tfidf_extractor=self.ner_tfidf_extractor,
+                    product_code=self.product_code
+                )
+            except Exception as e:
+                print(f"Error generating refined summary: {e}")
+        
         return {
             'query': query,
             'retrieved_chunks': retrieved,
             'references': references,
             'response': response,
+            'refined_summary': refined_summary,
             'metadata': {
                 'num_retrieved': len(retrieved),
                 'k': k,
