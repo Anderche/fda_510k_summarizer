@@ -4,6 +4,19 @@ Embedding Generation Module
 Generates vector embeddings for chunks and sub-summaries using sentence transformers.
 """
 
+import os
+# Set tokenizer parallelism before importing sentence_transformers to avoid warnings
+# Can be overridden by environment variable or .env file
+if "TOKENIZERS_PARALLELISM" not in os.environ:
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+# Try to load from .env if available
+try:
+    from dotenv import load_dotenv
+    load_dotenv(override=True)  # Override to respect .env file settings
+except ImportError:
+    pass
+
 from sentence_transformers import SentenceTransformer
 from typing import List, Dict, Any
 import numpy as np
