@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Anders FDA AI Guidance Summarizer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #f5f5f5;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .chat-container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            width: 100%;
+            max-width: 900px;
+            height: 90vh;
+            max-height: 800px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .chat-header {
+            background: linear-gradient(135deg, #4facfe 0%, #2563eb 100%);
+            color: white;
+            padding: 24px;
+            text-align: center;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        .chat-header h1 {
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            letter-spacing: -0.5px;
+        }
+
+        .chat-header p {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px;
+            background: #f8f9fa;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .chat-messages::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .chat-messages::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+
+        .chat-messages::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 3px;
+        }
+
+        .message {
+            display: flex;
+            gap: 12px;
+            animation: fadeIn 0.3s ease-in;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .message.user {
+            justify-content: flex-end;
+        }
+
+        .message-content {
+            max-width: 70%;
+            padding: 12px 16px;
+            border-radius: 12px;
+            line-height: 1.5;
+            word-wrap: break-word;
+        }
+
+        .message.user .message-content {
+            background: linear-gradient(135deg, #4facfe 0%, #2563eb 100%);
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+
+        .message.assistant .message-content {
+            background: white;
+            color: #333;
+            border: 1px solid #e0e0e0;
+            border-bottom-left-radius: 4px;
+            font-family: 'Georgia', 'Times New Roman', serif;
+            font-size: 15px;
+            line-height: 1.8;
+        }
+
+        .message.assistant .message-content h3 {
+            color: #2563eb;
+            font-size: 16px;
+            margin-bottom: 12px;
+            font-weight: 700;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 2px solid #2563eb;
+            padding-bottom: 6px;
+        }
+
+        .message.assistant .message-content p {
+            margin-bottom: 16px;
+            text-align: justify;
+        }
+
+        .message.assistant .message-content p:last-child {
+            margin-bottom: 0;
+        }
+
+        .message.assistant .message-content .response-text {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .message.assistant .message-content .response-text br {
+            display: block;
+            margin: 8px 0;
+        }
+
+        .message.assistant .message-content strong {
+            color: #2563eb;
+            font-weight: 600;
+        }
+
+        .message.assistant .message-content em {
+            font-style: italic;
+            color: #555;
+        }
+
+        .references {
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid #e0e0e0;
+        }
+
+        .references h4 {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+
+        .reference-item {
+            font-size: 12px;
+            color: #2563eb;
+            margin-bottom: 4px;
+            text-decoration: none;
+        }
+
+        .reference-item:hover {
+            text-decoration: underline;
+        }
+
+        .loading {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            color: #2563eb;
+        }
+
+        .loading-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #2563eb;
+            animation: bounce 1.4s infinite ease-in-out both;
+        }
+
+        .loading-dot:nth-child(1) {
+            animation-delay: -0.32s;
+        }
+
+        .loading-dot:nth-child(2) {
+            animation-delay: -0.16s;
+        }
+
+        @keyframes bounce {
+            0%, 80%, 100% {
+                transform: scale(0);
+            }
+            40% {
+                transform: scale(1);
+            }
+        }
+
+        .chat-input-container {
+            padding: 20px;
+            background: white;
+            border-top: 1px solid #e0e0e0;
+        }
+
+        .chat-input-form {
+            display: flex;
+            gap: 12px;
+            align-items: flex-end;
+        }
+
+        .chat-input {
+            flex: 1;
+            padding: 14px 18px;
+            border: 2px solid #e0e0e0;
+            border-radius: 24px;
+            font-size: 15px;
+            font-family: inherit;
+            resize: none;
+            max-height: 120px;
+            transition: border-color 0.2s;
+        }
+
+        .chat-input:focus {
+            outline: none;
+            border-color: #2563eb;
+        }
+
+        .send-button {
+            padding: 14px 28px;
+            background: linear-gradient(135deg, #4facfe 0%, #2563eb 100%);
+            color: white;
+            border: none;
+            border-radius: 24px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            white-space: nowrap;
+        }
+
+        .send-button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4);
+        }
+
+        .send-button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .error-message {
+            background: #fee;
+            color: #c33;
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 16px;
+        }
+
+        .empty-state {
+            text-align: center;
+            color: #999;
+            padding: 40px 20px;
+            font-size: 14px;
+        }
+
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="chat-container">
+        <div class="chat-header">
+            <h1>Anders FDA AI Guidance Summarizer</h1>
+            <p>Ask questions about FDA AI guidance documents and regulations</p>
+        </div>
+
+        <div class="chat-messages" id="chatMessages">
+            <div class="empty-state">
+                <div class="empty-state-icon">💬</div>
+                <div>Start a conversation by asking a question below</div>
+            </div>
+        </div>
+
+        <div class="chat-input-container">
+            <form class="chat-input-form" id="chatForm">
+                <textarea
+                    class="chat-input"
+                    id="chatInput"
+                    placeholder="Ask a question about FDA AI guidance documents..."
+                    rows="1"
+                ></textarea>
+                <button type="submit" class="send-button" id="sendButton">Send</button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        const chatMessages = document.getElementById('chatMessages');
+        const chatForm = document.getElementById('chatForm');
+        const chatInput = document.getElementById('chatInput');
+        const sendButton = document.getElementById('sendButton');
+
+        // Conversation history for followup context
+        let conversationHistory = [];
+
+        // Auto-resize textarea
+        chatInput.addEventListener('input', function() {
+            this.style.height = 'auto';
+            this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+        });
+
+        // Handle Enter key (Shift+Enter for new line)
+        chatInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                chatForm.dispatchEvent(new Event('submit'));
+            }
+        });
+
+        function clearEmptyState() {
+            const emptyState = chatMessages.querySelector('.empty-state');
+            if (emptyState) {
+                emptyState.remove();
+            }
+        }
+
+        function addMessage(role, content, references = null) {
+            clearEmptyState();
+
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${role}`;
+
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content';
+
+            if (role === 'user') {
+                contentDiv.textContent = content;
+            } else {
+                // Parse and format assistant response with enhanced formatting
+                let formattedContent = '';
+                
+                // Check if response starts with SUMMARY: or REFINED SUMMARY:
+                if (content.startsWith('REFINED SUMMARY:')) {
+                    const summaryText = content.replace('REFINED SUMMARY:', '').trim();
+                    formattedContent = `<h3>Refined Summary</h3><div class="response-text">${formatTextWithBreaks(summaryText)}</div>`;
+                } else if (content.startsWith('SUMMARY:')) {
+                    const summaryText = content.replace('SUMMARY:', '').trim();
+                    formattedContent = `<h3>Summary</h3><div class="response-text">${formatTextWithBreaks(summaryText)}</div>`;
+                } else {
+                    formattedContent = `<div class="response-text">${formatTextWithBreaks(content)}</div>`;
+                }
+
+                // Add references if available
+                if (references && references.length > 0) {
+                    let refsHtml = '<div class="references"><h4>References</h4>';
+                    references.forEach(ref => {
+                        refsHtml += `<div class="reference-item">${escapeHtml(ref.text)}</div>`;
+                    });
+                    refsHtml += '</div>';
+                    formattedContent += refsHtml;
+                }
+
+                contentDiv.innerHTML = formattedContent;
+            }
+
+            messageDiv.appendChild(contentDiv);
+            chatMessages.appendChild(messageDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+
+            return messageDiv;
+        }
+
+        function addLoadingMessage() {
+            clearEmptyState();
+
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message assistant';
+
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content loading';
+            contentDiv.innerHTML = `
+                <div class="loading-dot"></div>
+                <div class="loading-dot"></div>
+                <div class="loading-dot"></div>
+                <span style="margin-left: 8px;">Thinking...</span>
+            `;
+
+            messageDiv.appendChild(contentDiv);
+            chatMessages.appendChild(messageDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+
+            return messageDiv;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function formatTextWithBreaks(text) {
+            // Escape HTML first
+            let formatted = escapeHtml(text);
+            
+            // Split by double newlines first to preserve paragraphs
+            const paragraphs = formatted.split(/\n\n+/);
+            formatted = paragraphs.map(p => {
+                // Convert single newlines within paragraphs to <br>
+                p = p.replace(/\n/g, '<br>');
+                // Convert numbered/bulleted lists (basic support)
+                p = p.replace(/^(\d+\.\s+)/gm, '<strong>$1</strong>');
+                p = p.replace(/^[-•]\s+/gm, '<strong>•</strong> ');
+                // Bold section headers (lines ending with colon that are short)
+                p = p.replace(/^([A-Z][^:]{0,50}):/gm, '<strong>$1:</strong>');
+                return p.trim();
+            }).filter(p => p.length > 0).join('</p><p>');
+            
+            // Wrap in paragraph tags
+            if (formatted) {
+                formatted = '<p>' + formatted + '</p>';
+            }
+            
+            return formatted || '<p></p>';
+        }
+
+        async function sendMessage(message) {
+            // Add user message to UI
+            addMessage('user', message);
+
+            // Add loading indicator
+            const loadingMessage = addLoadingMessage();
+
+            // Add to conversation history
+            conversationHistory.push({ role: 'user', content: message });
+
+            try {
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        message: message,
+                        conversation_history: conversationHistory
+                    })
+                });
+
+                const data = await response.json();
+
+                // Remove loading message
+                loadingMessage.remove();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to get response');
+                }
+
+                // Add assistant response to UI
+                const assistantMessage = addMessage(
+                    'assistant',
+                    data.response,
+                    data.references || []
+                );
+
+                // Add to conversation history
+                conversationHistory.push({ role: 'assistant', content: data.response });
+
+                // Handle refined summary if available
+                if (data.refined_summary) {
+                    setTimeout(() => {
+                        addMessage('assistant', data.refined_summary);
+                        conversationHistory.push({ role: 'assistant', content: data.refined_summary });
+                    }, 500);
+                }
+
+            } catch (error) {
+                // Remove loading message
+                loadingMessage.remove();
+
+                // Add error message
+                const errorDiv = document.createElement('div');
+                errorDiv.className = 'message assistant';
+                const errorContent = document.createElement('div');
+                errorContent.className = 'message-content error-message';
+                errorContent.textContent = `Error: ${error.message}`;
+                errorDiv.appendChild(errorContent);
+                chatMessages.appendChild(errorDiv);
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+
+                console.error('Error:', error);
+            }
+        }
+
+        chatForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const message = chatInput.value.trim();
+            if (!message || sendButton.disabled) {
+                return;
+            }
+
+            // Disable input while processing
+            sendButton.disabled = true;
+            chatInput.disabled = true;
+            chatInput.value = '';
+            chatInput.style.height = 'auto';
+
+            // Send message
+            await sendMessage(message);
+
+            // Re-enable input
+            sendButton.disabled = false;
+            chatInput.disabled = false;
+            chatInput.focus();
+        });
+
+        // Focus input on load
+        chatInput.focus();
+    </script>
+</body>
+</html>
+
