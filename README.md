@@ -64,6 +64,8 @@ Build the vector knowledge base from your corpus:
 python build_rag_index.py corpus_DXN --output-dir rag_index --use-llm
 ```
 
+**Note:** `config.yaml` specifies `directory_to_vectorize`. For `corpus_ai_guidances`, system uses simplified regulatory consultant prompts with metadata only, no product codes.
+
 **Parameters:**
 - `corpus_DXN` - Directory containing PDF files
 - `--output-dir` - Output directory for index files (default: `rag_index`)
@@ -210,6 +212,10 @@ python test_eval_engine.py
 ```
 
 ## Configuration
+
+### Config File
+
+`config.yaml` specifies `directory_to_vectorize`. For `corpus_ai_guidances`, the system uses simplified regulatory consultant prompts (~80 words) with metadata only, excluding product codes.
 
 ### Environment Variables
 
