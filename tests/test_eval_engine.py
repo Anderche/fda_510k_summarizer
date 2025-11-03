@@ -3,6 +3,17 @@ Test script for the evaluation engine.
 Demonstrates usage of ROUGE and BLEU metrics.
 """
 
+import sys
+from pathlib import Path
+
+# Add project directories to path
+script_dir = Path(__file__).parent
+project_root = script_dir.parent
+src_path = project_root / "src"
+config_path = project_root / "config"
+sys.path.insert(0, str(config_path))
+sys.path.insert(0, str(src_path))
+
 from eval_engine import EvalEngine
 
 

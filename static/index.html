@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FDA 510(k) Summarizer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #4f6ddb 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #333;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #4f6ddb 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2em;
+            margin-bottom: 10px;
+            font-weight: 600;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 1.1em;
+        }
+
+        .content {
+            padding: 30px;
+        }
+
+        .input-section {
+            margin-bottom: 30px;
+        }
+
+        .query-input {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 1em;
+            transition: border-color 0.3s;
+            font-family: inherit;
+        }
+
+        .query-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .query-input::placeholder {
+            color: #999;
+        }
+
+        .button-container {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .btn {
+            flex: 1;
+            padding: 15px;
+            border: none;
+            border-radius: 10px;
+            font-size: 1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-family: inherit;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #4f6ddb 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-primary:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .btn-secondary {
+            background: #f0f0f0;
+            color: #333;
+        }
+
+        .btn-secondary:hover {
+            background: #e0e0e0;
+        }
+
+        .response-section {
+            margin-top: 30px;
+        }
+
+        .response-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+
+        .response-header h2 {
+            font-size: 1.5em;
+            color: #333;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+            color: #667eea;
+        }
+
+        .loading.show {
+            display: block;
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .response-box {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 20px;
+            margin-top: 15px;
+            white-space: pre-wrap;
+            line-height: 1.6;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+
+        .references {
+            margin-top: 30px;
+        }
+
+        .reference-item {
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 15px;
+            transition: box-shadow 0.3s;
+        }
+
+        .reference-item:hover {
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+        }
+
+        .reference-item h3 {
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 1.1em;
+        }
+
+        .reference-item p {
+            color: #666;
+            margin-bottom: 5px;
+        }
+
+        .reference-item a {
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        .reference-item a:hover {
+            text-decoration: underline;
+        }
+
+        .error {
+            background: #fee;
+            color: #c33;
+            padding: 15px;
+            border-radius: 10px;
+            margin-top: 15px;
+            border-left: 4px solid #c33;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+        }
+
+        .empty-state-icon {
+            font-size: 4em;
+            margin-bottom: 20px;
+            opacity: 0.5;
+        }
+
+        @media (max-width: 600px) {
+            .container {
+                margin: 10px;
+                border-radius: 15px;
+            }
+
+            .content {
+                padding: 20px;
+            }
+
+            .header h1 {
+                font-size: 1.5em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Anders FDA AI Guidance Document Summarizer</h1>
+            <h3>
+                The Food and Drug Administration has recently released 
+                final and draft guidances for medical device makers.
+            </h3>
+            <p>Have a specific question? Ask it below!</p>
+            
+        </div>
+
+        <div class="content">
+            <div class="input-section">
+                <input 
+                    type="text" 
+                    class="query-input" 
+                    id="queryInput" 
+                    placeholder="Ask a question about FDA medical device requirements..."
+                    autocomplete="off"
+                />
+                <div class="button-container">
+                    <button class="btn btn-primary" id="submitBtn" onclick="handleQuery()">
+                        🔍 Search
+                    </button>
+                    <button class="btn btn-secondary" onclick="clearResponse()">
+                        ✨ Clear
+                    </button>
+                </div>
+            </div>
+
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <p>Searching latest AI guidances...</p>
+            </div>
+
+            <div class="response-section" id="responseSection" style="display: none;">
+                <div class="response-header">
+                    <h2>Response</h2>
+                </div>
+                <div class="response-box" id="responseBox"></div>
+
+                <div id="refinedSummarySection" style="display: none;">
+                    <div class="response-header">
+                        <h2>Refined Summary</h2>
+                    </div>
+                    <div class="response-box" id="refinedSummaryBox"></div>
+                </div>
+
+                <div class="references">
+                    <h2 style="margin-bottom: 15px;">References</h2>
+                    <div id="referencesBox"></div>
+                </div>
+            </div>
+
+            <div class="empty-state" id="emptyState">
+                <div class="empty-state-icon">💬</div>
+                <p>Enter a question above to search FDA documents</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Handle Enter key press
+        document.getElementById('queryInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                handleQuery();
+            }
+        });
+
+        async function handleQuery() {
+            const query = document.getElementById('queryInput').value.trim();
+            if (!query) {
+                alert('Please enter a question');
+                return;
+            }
+
+            // Show loading, hide empty state
+            document.getElementById('loading').classList.add('show');
+            document.getElementById('emptyState').style.display = 'none';
+            document.getElementById('responseSection').style.display = 'none';
+            document.getElementById('submitBtn').disabled = true;
+
+            try {
+                const response = await fetch('/query', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        query: query,
+                        k: 5
+                    })
+                });
+
+                const data = await response.json();
+
+                // Hide loading, show response
+                document.getElementById('loading').classList.remove('show');
+                document.getElementById('responseSection').style.display = 'block';
+                document.getElementById('submitBtn').disabled = false;
+
+                // Display response
+                const responseBox = document.getElementById('responseBox');
+                responseBox.textContent = data.response || 'No response generated';
+
+                // Display refined summary if available
+                if (data.refined_summary) {
+                    const refinedSummaryBox = document.getElementById('refinedSummaryBox');
+                    refinedSummaryBox.textContent = data.refined_summary;
+                    document.getElementById('refinedSummarySection').style.display = 'block';
+                } else {
+                    document.getElementById('refinedSummarySection').style.display = 'none';
+                }
+
+                // Display references
+                const referencesBox = document.getElementById('referencesBox');
+                if (data.references && data.references.length > 0) {
+                    referencesBox.innerHTML = data.references.map((ref, idx) => `
+                        <div class="reference-item">
+                            <h3>${ref.display_title || ref.file_name || `Reference ${idx + 1}`}</h3>
+                            ${ref.page_num ? `<p>📄 Page ${ref.page_num}</p>` : ''}
+                            ${ref.pdf_link ? `<p><a href="${ref.pdf_link}" target="_blank">🔗 View Document</a></p>` : ''}
+                        </div>
+                    `).join('');
+                } else {
+                    referencesBox.innerHTML = '<p style="color: #999;">No references available</p>';
+                }
+            } catch (error) {
+                document.getElementById('loading').classList.remove('show');
+                document.getElementById('responseSection').style.display = 'block';
+                document.getElementById('responseBox').innerHTML = `<div class="error">Error: ${error.message}</div>`;
+                document.getElementById('refinedSummarySection').style.display = 'none';
+                document.getElementById('referencesBox').innerHTML = '';
+                document.getElementById('submitBtn').disabled = false;
+            }
+        }
+
+        function clearResponse() {
+            document.getElementById('queryInput').value = '';
+            document.getElementById('responseSection').style.display = 'none';
+            document.getElementById('emptyState').style.display = 'block';
+            document.getElementById('loading').classList.remove('show');
+        }
+    </script>
+</body>
+</html>
+

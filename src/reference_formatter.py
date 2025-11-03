@@ -7,6 +7,38 @@ Formats references with file, page, paragraph, and PDF links.
 import os
 from typing import Dict, Any, Optional
 
+# Mapping of FDA guidance filenames to proper titles and links
+GUIDANCE_MAPPING = {
+    'guidance-ai-enabled-device-software-functions.pdf': {
+        'title': 'Artificial Intelligence-Enabled Device Software Functions: Lifecycle Management and Marketing Submission Recommendations',
+        'link': 'https://www.fda.gov/media/184856/download',
+        'type': 'DRAFT Guidance for Industry and Food and Drug Administration Staff'
+    },
+    'Considerations_for_the_Use_of_Artificial_Intelligence_to_Support_Regulatory_Decision_Making.pdf': {
+        'title': 'Considerations for the Use of Artificial Intelligence to Support Regulatory Decision-Making for Drug and Biological Products',
+        'link': 'https://www.fda.gov/media/184830/download',
+        'type': 'DRAFT Guidance for Industry and Other Interested Parties'
+    },
+    'Guidance-Predetermined-Change-Control-AI.pdf': {
+        'title': 'Marketing Submission Recommendations for a Predetermined Change Control Plan for Artificial Intelligence-Enabled Device Software Functions',
+        'link': 'https://www.fda.gov/media/166704/download',
+        'type': 'FDA Guidance - August 18, 2025'
+    }
+}
+
+
+def get_guidance_info(file_name: str) -> Optional[Dict[str, str]]:
+    """
+    Get proper title and link for FDA guidance documents.
+    
+    Args:
+        file_name: Name of the PDF file
+        
+    Returns:
+        Dictionary with 'title', 'link', and 'type' keys, or None if not found
+    """
+    return GUIDANCE_MAPPING.get(file_name)
+
 
 def format_reference(chunk_data: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -29,9 +61,17 @@ def format_reference(chunk_data: Dict[str, Any]) -> Dict[str, Any]:
     if not file_name and file_path:
         file_name = os.path.basename(file_path)
     
-    # Generate PDF link (file:// URL for local files)
+    # Check if this is a guidance document with proper title/link
+    guidance_info = get_guidance_info(file_name) if file_name else None
+    display_title = guidance_info.get('title') if guidance_info else None
+    external_link = guidance_info.get('link') if guidance_info else None
+    
+    # Generate PDF link (file:// URL for local files, or use external link for guidances)
     pdf_link = None
-    if file_path and os.path.exists(file_path):
+    if external_link:
+        # For guidance documents, use the external FDA link
+        pdf_link = external_link
+    elif file_path and os.path.exists(file_path):
         # Use file:// protocol for local files
         abs_path = os.path.abspath(file_path)
         # Encode path properly
@@ -52,7 +92,9 @@ def format_reference(chunk_data: Dict[str, Any]) -> Dict[str, Any]:
         'page_num': page_num,
         'para_index': para_index,
         'pdf_link': pdf_link,
-        'file_path': file_path
+        'file_path': file_path,
+        'display_title': display_title,
+        'guidance_type': guidance_info.get('type') if guidance_info else None
     }
 
 
@@ -71,8 +113,10 @@ def format_reference_string(chunk_data: Dict[str, Any], include_link: bool = Tru
     
     parts = []
     
-    # File name
-    if ref['file_name']:
+    # Use display title for guidance documents, otherwise use file name or K-number
+    if ref.get('display_title'):
+        parts.append(ref['display_title'])
+    elif ref['file_name']:
         parts.append(f"File: {ref['file_name']}")
     elif ref['k_number']:
         parts.append(f"K-number: {ref['k_number']}")
@@ -108,8 +152,10 @@ def format_reference_markdown(chunk_data: Dict[str, Any]) -> str:
     
     parts = []
     
-    # File name or K-number
-    if ref['file_name']:
+    # Use display title for guidance documents, otherwise use file name or K-number
+    if ref.get('display_title'):
+        file_display = ref['display_title']
+    elif ref['file_name']:
         file_display = ref['file_name']
     elif ref['k_number']:
         file_display = f"K{ref['k_number']}"

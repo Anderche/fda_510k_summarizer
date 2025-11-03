@@ -23,7 +23,16 @@ ENV/
 # Project specific
 corpus*/
 *.pdf
-
-
-
 /_REFERENCE
+/docs
+
+# RAG indices (these are large binary files)
+# Keep rag_index directories but ignore large model files
+rag_index/*.index
+rag_index/*.mappings
+rag_index/*.meta
+rag_index_guidances/*.index
+rag_index_guidances/*.mappings
+rag_index_guidances/*.meta
+
+

@@ -6,14 +6,26 @@ processes queries through RAG pipeline, and computes ROUGE/BLEU metrics.
 """
 
 import os
+import sys
 import argparse
+from pathlib import Path
+
+# Add project directories to path
+script_dir = Path(__file__).parent
+project_root = script_dir.parent
+src_path = project_root / "src"
+config_path = project_root / "config"
+sys.path.insert(0, str(config_path))
+sys.path.insert(0, str(src_path))
+
 from eval_engine import EvalEngine
 from query_rag import load_rag_system
 
 
 def main():
     parser = argparse.ArgumentParser(description='Evaluate RAG system from CSV file')
-    parser.add_argument('csv_path', default='eval_template.csv', nargs='?',
+    csv_default = project_root / "config" / "eval_template.csv"
+    parser.add_argument('csv_path', default=str(csv_default), nargs='?',
                        help='Path to CSV file with query and expected_response columns')
     parser.add_argument('--index-dir', default='rag_index',
                        help='Directory containing RAG index files')
