@@ -292,16 +292,16 @@ class VectorStore:
         mappings_path = f"{filepath}.mappings"
         if os.path.exists(mappings_path):
             with open(mappings_path, 'rb') as f:
-            self.chunk_mappings = pickle.load(f)
+                self.chunk_mappings = pickle.load(f)
         
         # Load metadata
         meta_path = f"{filepath}.meta"
         if os.path.exists(meta_path):
             with open(meta_path, 'rb') as f:
-            metadata = pickle.load(f)
+                metadata = pickle.load(f)
                 self.embedding_dim = metadata.get('embedding_dim', 384)
-            self.section_index = metadata.get('section_index', {})
-            self.source_type = metadata.get('source_type', None)
+                self.section_index = metadata.get('section_index', {})
+                self.source_type = metadata.get('source_type', None)
         
         # Convert old format to LangChain format
         # Extract documents from chunk_mappings
