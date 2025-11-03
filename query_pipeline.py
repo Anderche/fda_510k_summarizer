@@ -190,13 +190,16 @@ class QueryPipeline:
                 context_sections.append(section)
         
         # Step 7: Augment LLM prompt with context, NER, TF-IDF, and sections
+        # Get source type from vector store
+        source_type = getattr(self.vector_store, 'source_type', None)
         response = self.llm_generator.generate_response(
             query,
             context_chunks,
             product_code=self.product_code,
             query_ner=query_ner,
             query_tfidf=query_tfidf,
-            context_sections=', '.join(context_sections) if context_sections else 'N/A'
+            context_sections=', '.join(context_sections) if context_sections else 'N/A',
+            source_type=source_type
         )
         
         # Step 8: Generate refined summary based on most relevant section and sub-summaries

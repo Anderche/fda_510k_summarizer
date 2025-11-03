@@ -167,6 +167,76 @@ Provide a concise summary (2-3 sentences) highlighting the most important inform
             else:
                 raise e
     
+    def _generate_guidance_response(self, query: str, context_chunks: List[Dict[str, Any]]) -> str:
+        """
+        Generate a simplified response for FDA guidance documents.
+        
+        Args:
+            query: User's query/question
+            context_chunks: List of retrieved chunk dictionaries with 'text' key
+            
+        Returns:
+            Generated response text (~80 words)
+        """
+        # Build context from chunks with references
+        context_parts = []
+        total_length = 0
+        max_context_length = 50000  # Smaller context for simplified prompt
+        
+        for i, chunk in enumerate(context_chunks[:5], 1):  # Limit to top 5 chunks
+            chunk_text = chunk.get('text', '')
+            file_name = chunk.get('metadata', {}).get('file_name', 'Unknown')
+            
+            chunk_entry = f"Document {i} ({file_name}):\n{chunk_text}"
+            
+            # Check if adding this chunk would exceed context limit
+            if total_length + len(chunk_entry) > max_context_length:
+                remaining = max_context_length - total_length - 500
+                chunk_entry = f"Document {i} ({file_name}):\n{chunk_text[:remaining]}..."
+            
+            context_parts.append(chunk_entry)
+            total_length += len(chunk_entry)
+            
+            if total_length >= max_context_length:
+                break
+        
+        context = "\n\n".join(context_parts)
+        
+        system_prompt = "You are a regulatory affairs consultant whose task is to research the AI regulations, standards, and guidances."
+        
+        user_prompt = f"""User Query: {query}
+
+RELEVANT DOCUMENTS:
+{context}
+
+INSTRUCTIONS:
+Provide a concise, focused response (~80 words) that directly answers the query based on the FDA AI guidance documents provided. Focus on regulatory requirements, standards, and guidance specific to artificial intelligence in medical devices. Use metadata from documents (file names, sections) but do not reference product codes."""
+
+        try:
+            message = self.client.messages.create(
+                model=self.model_name,
+                max_tokens=200,  # Limit to ~80 words
+                temperature=0.7,
+                system=system_prompt,
+                messages=[
+                    {"role": "user", "content": user_prompt}
+                ]
+            )
+            
+            # Extract text from response
+            if message.content and len(message.content) > 0:
+                response_text = message.content[0].text.strip()
+                # Ensure it starts with SUMMARY:
+                if not response_text.strip().startswith("SUMMARY:"):
+                    response_text = "SUMMARY:\n" + response_text
+                return response_text
+            else:
+                return self._generate_fallback_summary(query, context_chunks)
+        
+        except Exception as e:
+            print(f"Error generating guidance response: {e}")
+            return self._generate_fallback_summary(query, context_chunks)
+    
     def _generate_fallback_summary(self, query: str, context_chunks: List[Dict[str, Any]]) -> str:
         """
         Generate a simple fallback summary when LLM fails.
@@ -308,21 +378,25 @@ Provide a concise summary (2-3 sentences) highlighting the most important inform
     
     def generate_response(self, query: str, context_chunks: List[Dict[str, Any]], product_code: Optional[str] = None,
                          query_ner: Optional[str] = None, query_tfidf: Optional[str] = None, 
-                         context_sections: Optional[str] = None) -> str:
+                         context_sections: Optional[str] = None, source_type: Optional[str] = None) -> str:
         """
         Generate a response to a user query based on retrieved context.
         
         Args:
             query: User's query/question
             context_chunks: List of retrieved chunk dictionaries with 'text' key
-            product_code: Optional product code for context
+            product_code: Optional product code for context (not used for guidance documents)
             query_ner: NER extraction results from query
             query_tfidf: TF-IDF terms from query
             context_sections: Sections found in retrieved context
+            source_type: Source type ('corpus_ai_guidances' or '510k')
             
         Returns:
             Generated response text
         """
+        # Use simplified prompt for guidance documents
+        if source_type == 'corpus_ai_guidances':
+            return self._generate_guidance_response(query, context_chunks)
         # Build context from chunks with references
         context_parts = []
         total_length = 0
@@ -640,11 +714,31 @@ class SimpleLLMGenerator:
     
     def generate_response(self, query: str, context_chunks: List[Dict[str, Any]], product_code: Optional[str] = None,
                          query_ner: Optional[str] = None, query_tfidf: Optional[str] = None,
-                         context_sections: Optional[str] = None) -> str:
+                         context_sections: Optional[str] = None, source_type: Optional[str] = None) -> str:
         """Generate a simple response based on context."""
         if not context_chunks:
             return "SUMMARY:\nNo relevant documents found to answer your question."
         
+        # Use simplified response for guidance documents
+        if source_type == 'corpus_ai_guidances':
+            response_parts = ["SUMMARY:"]
+            response_parts.append(f"Based on FDA AI guidance documents, regarding your question '{query}':")
+            
+            # Extract key information from top 3 chunks
+            for i, chunk in enumerate(context_chunks[:3], 1):
+                chunk_text = chunk.get('text', '').strip()
+                file_name = chunk.get('metadata', {}).get('file_name', 'Unknown')
+                # Limit chunk text to 200 chars for summary
+                if len(chunk_text) > 200:
+                    # Try to break at sentence
+                    first_sentence = chunk_text.split('.')[0] if '.' in chunk_text else chunk_text[:200]
+                    chunk_text = first_sentence[:200] + "..."
+                if chunk_text:
+                    response_parts.append(f"\n[{file_name}] {chunk_text}")
+            
+            return "\n".join(response_parts)
+        
+        # Standard 510k response
         response_parts = ["SUMMARY:"]
         response_parts.append(f"Based on FDA CDRH 510(k) summaries for product code {product_code or 'the specified devices'}, regarding your question '{query}':")
         

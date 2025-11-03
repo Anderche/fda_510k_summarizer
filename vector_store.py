@@ -8,7 +8,7 @@ import faiss
 import numpy as np
 import pickle
 import os
-from typing import List, Dict, Tuple, Any
+from typing import List, Dict, Tuple, Any, Optional
 
 
 class VectorStore:
@@ -30,6 +30,8 @@ class VectorStore:
         self.is_normalized = False
         # Section index: maps section names to chunk indices
         self.section_index: Dict[str, List[int]] = {}  # section_name -> list of chunk indices
+        # Source type: 'corpus_ai_guidances' or '510k'
+        self.source_type: Optional[str] = None
     
     def normalize_index(self):
         """Normalize all vectors in the index for cosine similarity."""
@@ -158,12 +160,13 @@ class VectorStore:
         with open(f"{filepath}.mappings", 'wb') as f:
             pickle.dump(self.chunk_mappings, f)
         
-        # Save metadata (including section index)
+        # Save metadata (including section index and source type)
         metadata = {
             'embedding_dim': self.embedding_dim,
             'is_normalized': self.is_normalized,
             'total_vectors': self.index.ntotal,
-            'section_index': self.section_index
+            'section_index': self.section_index,
+            'source_type': getattr(self, 'source_type', None)
         }
         with open(f"{filepath}.meta", 'wb') as f:
             pickle.dump(metadata, f)
@@ -191,6 +194,8 @@ class VectorStore:
             self.is_normalized = metadata['is_normalized']
             # Load section index if present (for backwards compatibility)
             self.section_index = metadata.get('section_index', {})
+            # Load source type if present
+            self.source_type = metadata.get('source_type', None)
         
         print(f"Vector store loaded from {filepath}.* ({self.index.ntotal} vectors, {len(self.section_index)} sections)")
     
