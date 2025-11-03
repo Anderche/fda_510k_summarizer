@@ -26,12 +26,11 @@ corpus*/
 *.pdf
 
 # RAG indices (build these separately or provide via volume)
-rag_index/*.index
-rag_index/*.mappings
-rag_index/*.meta
-rag_index_guidances/*.index
-rag_index_guidances/*.mappings
-rag_index_guidances/*.meta
+# NOTE: We need the rag_index_guidances files for production
+# rag_index/*.index
+# rag_index/*.mappings
+# rag_index/*.meta
+rag_index_guidances/vector_index/
 
 # Reference files
 _REFERENCE/
