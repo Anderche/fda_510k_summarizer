@@ -1,0 +1,4 @@
+# RAG Index Configuration
+# Directory containing PDF files to vectorize
+directory_to_vectorize: corpus_ai_guidances
+

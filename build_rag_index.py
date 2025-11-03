@@ -6,6 +6,7 @@ Orchestrates the complete pipeline to build the RAG index from corpus PDFs.
 
 import os
 import argparse
+import yaml
 
 # Load .env file if available
 try:
@@ -25,25 +26,78 @@ from vector_store import VectorStore
 from llm_integration import LLMGenerator, SimpleLLMGenerator
 
 
-def build_rag_index(corpus_dir: str, output_dir: str = "rag_index", 
+def load_config(config_path: str = None) -> dict:
+    """
+    Load configuration from YAML file.
+    
+    Args:
+        config_path: Path to config file (defaults to config.yaml in script directory)
+        
+    Returns:
+        Dictionary with configuration settings
+    """
+    if config_path is None:
+        # Default to config.yaml in script directory
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        config_path = os.path.join(script_dir, 'config.yaml')
+    
+    if os.path.exists(config_path):
+        with open(config_path, 'r') as f:
+            return yaml.safe_load(f) or {}
+    return {}
+
+
+def detect_source_type(corpus_dir: str) -> str:
+    """
+    Detect source type from directory name.
+    
+    Args:
+        corpus_dir: Directory path
+        
+    Returns:
+        Source type: 'corpus_ai_guidances' or '510k'
+    """
+    dir_name = os.path.basename(os.path.normpath(corpus_dir))
+    if dir_name == 'corpus_ai_guidances':
+        return 'corpus_ai_guidances'
+    return '510k'
+
+
+def build_rag_index(corpus_dir: str = None, output_dir: str = "rag_index", 
                    chunk_size: int = 800, chunk_overlap: int = 100,
                    generate_sub_summaries: bool = True,
-                   use_llm: bool = False, llm_model: str = "claude-3-sonnet-20240229", api_key: str = None):
+                   use_llm: bool = False, llm_model: str = "claude-3-sonnet-20240229", api_key: str = None,
+                   source_type: str = None):
     """
     Build complete RAG index from corpus.
     
     Args:
-        corpus_dir: Directory containing PDF files
+        corpus_dir: Directory containing PDF files (optional if config.yaml exists)
         output_dir: Directory to save index files
         chunk_size: Target chunk size in tokens
         chunk_overlap: Chunk overlap in tokens
         generate_sub_summaries: Whether to generate sub-summaries for multi-vector RAG
         use_llm: Whether to use full LLM (requires model download) or simple generator
         llm_model: LLM model name if use_llm is True
+        api_key: API key for LLM
+        source_type: Source type ('corpus_ai_guidances' or '510k'), auto-detected if None
     """
+    # Load config if corpus_dir not provided
+    config = load_config()
+    if not corpus_dir:
+        corpus_dir = config.get('directory_to_vectorize')
+        if not corpus_dir:
+            raise ValueError("corpus_dir must be provided either as argument or in config.yaml as 'directory_to_vectorize'")
+    
+    # Detect source type
+    if not source_type:
+        source_type = detect_source_type(corpus_dir)
+    
     print("=" * 80)
     print("Building RAG Index")
     print("=" * 80)
+    print(f"Source directory: {corpus_dir}")
+    print(f"Source type: {source_type}")
     
     # Step 1: Extract text from PDFs
     print("\n[Step 1/6] Extracting text from PDFs...")
@@ -67,6 +121,8 @@ def build_rag_index(corpus_dir: str, output_dir: str = "rag_index",
     # Step 4: Initialize vector store and add chunk embeddings
     print(f"\n[Step 4/6] Adding chunk embeddings to vector store...")
     vector_store = VectorStore(embedding_dim=chunk_embeddings.shape[1])
+    # Store source type in vector store metadata
+    vector_store.source_type = source_type
     vector_store.add_embeddings(chunk_embeddings, chunks)
     
     # Step 5: Generate sub-summaries and embeddings (multi-vector RAG)
@@ -168,7 +224,7 @@ def build_rag_index(corpus_dir: str, output_dir: str = "rag_index",
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Build RAG index from corpus PDFs')
-    parser.add_argument('corpus_dir', help='Directory containing PDF files')
+    parser.add_argument('corpus_dir', nargs='?', default=None, help='Directory containing PDF files (optional if in config.yaml)')
     parser.add_argument('--output-dir', default='rag_index', help='Output directory for index files')
     parser.add_argument('--chunk-size', type=int, default=800, help='Chunk size in tokens (default: 800 for more chunks per PDF)')
     parser.add_argument('--chunk-overlap', type=int, default=100, help='Chunk overlap in tokens (default: 100)')
