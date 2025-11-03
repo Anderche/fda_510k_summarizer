@@ -6,6 +6,7 @@ Deployable web API for querying FDA 510(k) documents and guidance materials.
 
 import os
 import sys
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -25,25 +26,6 @@ from query_rag import load_rag_system
 from query_pipeline import QueryPipeline
 from reference_formatter import format_multiple_references
 
-app = FastAPI(
-    title="FDA 510(k) Summarizer API",
-    description="RAG system for querying FDA 510(k) medical device documents",
-    version="1.0.0"
-)
-
-# Enable CORS for frontend integration
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Serve static files
-if os.path.exists("static"):
-    app.mount("/static", StaticFiles(directory="static"), name="static")
-
 # Global variables for loaded system
 pipeline: Optional[QueryPipeline] = None
 INDEX_DIR: Optional[str] = None
@@ -51,40 +33,10 @@ PRODUCT_CODE: Optional[str] = None
 USE_LLM: bool = True
 
 
-# Request/Response models
-class QueryRequest(BaseModel):
-    query: str = Field(..., description="The question to ask about FDA documents")
-    index_dir: Optional[str] = Field(None, description="Which index to use (defaults to configured index)")
-    k: int = Field(5, description="Number of results to retrieve")
-    use_guidances: bool = Field(False, description="Use AI guidance documents instead of 510k documents")
-
-
-class Reference(BaseModel):
-    display_title: Optional[str] = None
-    file_name: Optional[str] = None
-    k_number: Optional[str] = None
-    page_num: Optional[int] = None
-    para_index: Optional[int] = None
-    pdf_link: Optional[str] = None
-
-
-class QueryResponse(BaseModel):
-    query: str
-    response: str
-    refined_summary: Optional[str] = None
-    references: List[Reference]
-    metadata: Dict[str, Any]
-
-
-class HealthResponse(BaseModel):
-    status: str
-    index_loaded: bool
-    index_dir: Optional[str] = None
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Load the RAG system on startup"""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan event handler for startup and shutdown"""
+    # Startup
     global pipeline, INDEX_DIR, PRODUCT_CODE, USE_LLM
     
     # Determine which index to load
@@ -118,6 +70,63 @@ async def startup_event():
     except Exception as e:
         print(f"Error loading RAG system: {e}")
         pipeline = None
+    
+    yield
+    
+    # Shutdown (if needed in the future)
+    # Cleanup code can go here
+
+
+app = FastAPI(
+    title="FDA 510(k) Summarizer API",
+    description="RAG system for querying FDA 510(k) medical device documents",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+# Enable CORS for frontend integration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Serve static files
+if os.path.exists("static"):
+    app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+# Request/Response models
+class QueryRequest(BaseModel):
+    query: str = Field(..., description="The question to ask about FDA documents")
+    index_dir: Optional[str] = Field(None, description="Which index to use (defaults to configured index)")
+    k: int = Field(5, description="Number of results to retrieve")
+    use_guidances: bool = Field(False, description="Use AI guidance documents instead of 510k documents")
+
+
+class Reference(BaseModel):
+    display_title: Optional[str] = None
+    file_name: Optional[str] = None
+    k_number: Optional[str] = None
+    page_num: Optional[int] = None
+    para_index: Optional[int] = None
+    pdf_link: Optional[str] = None
+
+
+class QueryResponse(BaseModel):
+    query: str
+    response: str
+    refined_summary: Optional[str] = None
+    references: List[Reference]
+    metadata: Dict[str, Any]
+
+
+class HealthResponse(BaseModel):
+    status: str
+    index_loaded: bool
+    index_dir: Optional[str] = None
 
 
 @app.get("/", response_class=HTMLResponse)

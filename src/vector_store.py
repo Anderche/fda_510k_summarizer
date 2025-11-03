@@ -249,9 +249,9 @@ class VectorStore:
         old_format_index = f"{filepath}.index"
         new_format_dir = filepath
         
-        # Check if old format exists
+        # Check if old format exists - prioritize old format over new empty format
         if os.path.exists(old_format_index):
-            print("Detected old format index, loading and converting...")
+            print(f"Detected old format index at {old_format_index}, loading and converting...")
             self._load_old_format(filepath)
         elif os.path.exists(new_format_dir) and os.path.isdir(new_format_dir):
             # Try loading new LangChain format
@@ -282,7 +282,11 @@ class VectorStore:
     
     def _load_old_format(self, filepath: str):
         """Load old format index (.index, .mappings, .meta files)."""
-        import faiss
+        try:
+            import faiss
+        except ImportError as e:
+            print(f"Error: faiss not available for loading old format: {e}")
+            raise
         
         # Load old FAISS index
         old_index_path = f"{filepath}.index"
