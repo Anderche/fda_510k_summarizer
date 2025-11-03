@@ -39,7 +39,8 @@ class QueryEnhancer:
         if self._cache_initialized:
             return
         
-        if self.vector_store.index.ntotal == 0:
+        # Check if vectorstore is initialized
+        if self.vector_store.vectorstore is None or len(self.vector_store.chunk_mappings) == 0:
             self._cache_initialized = True
             return
         

@@ -7,6 +7,7 @@ Orchestrates the complete pipeline to build the RAG index from corpus PDFs.
 import os
 import argparse
 import yaml
+import numpy as np
 
 # Load .env file if available
 try:
@@ -113,17 +114,19 @@ def build_rag_index(corpus_dir: str = None, output_dir: str = "rag_index",
     chunks = chunker.chunk_documents(documents)
     print(f"Created {len(chunks)} chunks from {len(documents)} documents")
     
-    # Step 3: Generate embeddings for chunks
-    print(f"\n[Step 3/6] Generating embeddings for {len(chunks)} chunks...")
+    # Step 3: Initialize embedding generator (LangChain will compute embeddings automatically)
+    print(f"\n[Step 3/6] Initializing embedding generator...")
     embedding_generator = EmbeddingGenerator()
-    chunk_embeddings = embedding_generator.embed_chunks(chunks)
     
-    # Step 4: Initialize vector store and add chunk embeddings
-    print(f"\n[Step 4/6] Adding chunk embeddings to vector store...")
-    vector_store = VectorStore(embedding_dim=chunk_embeddings.shape[1])
+    # Step 4: Initialize vector store and add chunks (LangChain computes embeddings from text)
+    print(f"\n[Step 4/6] Adding chunks to vector store (computing embeddings with LangChain)...")
+    vector_store = VectorStore(embedding_dim=384, embedding_model=embedding_generator)  # Default dim for all-MiniLM-L6-v2
     # Store source type in vector store metadata
     vector_store.source_type = source_type
-    vector_store.add_embeddings(chunk_embeddings, chunks)
+    # Pass chunks - embeddings will be computed automatically by LangChain
+    # Create dummy embeddings array for backward compatibility (will be ignored)
+    dummy_embeddings = np.zeros((len(chunks), 384))  # Will be ignored, LangChain computes from text
+    vector_store.add_embeddings(dummy_embeddings, chunks)
     
     # Step 5: Generate sub-summaries and embeddings (multi-vector RAG)
     if generate_sub_summaries:
@@ -193,13 +196,11 @@ def build_rag_index(corpus_dir: str = None, output_dir: str = "rag_index",
         
         print(f"  Generated {len(sub_summaries)} sub-summaries")
         
-        # Generate embeddings for sub-summaries
-        print(f"  Generating embeddings for sub-summaries...")
-        sub_summary_embeddings = embedding_generator.embed_sub_summaries(sub_summaries)
-        
-        # Add sub-summary embeddings to vector store
-        print(f"  Adding sub-summary embeddings to vector store...")
-        vector_store.add_sub_summary_embeddings(sub_summary_embeddings, sub_summaries, linked_chunks)
+        # Add sub-summaries to vector store (LangChain computes embeddings from text)
+        print(f"  Adding sub-summaries to vector store (computing embeddings with LangChain)...")
+        # Create dummy embeddings array for backward compatibility (will be ignored)
+        dummy_sub_embeddings = np.zeros((len(sub_summaries), 384))  # Will be ignored
+        vector_store.add_sub_summary_embeddings(dummy_sub_embeddings, sub_summaries, linked_chunks)
     
     else:
         print(f"\n[Step 5/6] Skipping sub-summary generation (multi-vector RAG disabled)")
