@@ -249,12 +249,12 @@ class VectorStore:
         old_format_index = f"{filepath}.index"
         new_format_dir = filepath
         
-        # Check if old format exists - prioritize old format over new empty format
-        if os.path.exists(old_format_index):
-            print(f"Detected old format index at {old_format_index}, loading and converting...")
-            self._load_old_format(filepath)
-        elif os.path.exists(new_format_dir) and os.path.isdir(new_format_dir):
-            # Try loading new LangChain format
+        # Prefer new format when both exist (new format is current standard)
+        new_format_exists = os.path.exists(new_format_dir) and os.path.isdir(new_format_dir)
+        old_format_exists = os.path.exists(old_format_index)
+        
+        if new_format_exists:
+            # Try loading new LangChain format first
             try:
                 self.vectorstore = FAISS.load_local(filepath, self.langchain_embeddings, allow_dangerous_deserialization=True)
                 
@@ -263,6 +263,9 @@ class VectorStore:
                 if os.path.exists(mappings_path):
                     with open(mappings_path, 'rb') as f:
                         self.chunk_mappings = pickle.load(f)
+                        print(f"Loaded {len(self.chunk_mappings)} chunk mappings from {mappings_path}")
+                else:
+                    print(f"Warning: Mappings file not found at {mappings_path}")
                 
                 # Load metadata
                 meta_path = f"{filepath}.meta"
@@ -272,11 +275,36 @@ class VectorStore:
                         self.embedding_dim = metadata.get('embedding_dim', 384)
                         self.section_index = metadata.get('section_index', {})
                         self.source_type = metadata.get('source_type', None)
+                else:
+                    print(f"Warning: Metadata file not found at {meta_path}")
                 
-                print(f"Vector store loaded from {filepath} ({len(self.chunk_mappings)} chunks, {len(self.section_index)} sections)")
+                # Verify we got data - check both vectorstore and mappings
+                vectorstore_count = 0
+                if self.vectorstore and hasattr(self.vectorstore, 'index'):
+                    try:
+                        vectorstore_count = self.vectorstore.index.ntotal
+                    except:
+                        pass
+                
+                # If we have valid data in either vectorstore or mappings, use new format
+                if len(self.chunk_mappings) > 0 or vectorstore_count > 0:
+                    chunks_info = f"{len(self.chunk_mappings)} chunks" if len(self.chunk_mappings) > 0 else f"{vectorstore_count} vectors (no mappings)"
+                    print(f"Vector store loaded from {filepath} ({chunks_info}, {len(self.section_index)} sections)")
+                    return
+                else:
+                    print(f"Warning: New format has no data (chunks: {len(self.chunk_mappings)}, vectors: {vectorstore_count}), falling back to old format")
+                    # Fall through to old format
             except Exception as e:
-                print(f"Error loading new format, trying old format: {e}")
-                self._load_old_format(filepath)
+                import traceback
+                print(f"Error loading new format: {e}")
+                print(traceback.format_exc())
+                print("Falling back to old format...")
+                # Fall through to old format
+        
+        # Try old format as fallback
+        if old_format_exists:
+            print(f"Loading old format index from {old_format_index}...")
+            self._load_old_format(filepath)
         else:
             raise FileNotFoundError(f"Index not found at {filepath} or {old_format_index}")
     
