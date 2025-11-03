@@ -10,16 +10,27 @@ import yaml
 import numpy as np
 
 # Load .env file if available
+import sys
+from pathlib import Path
+
+# Add src directory to path
+script_dir = Path(__file__).parent
+project_root = script_dir.parent
+src_path = project_root / "src"
+sys.path.insert(0, str(src_path))
+
 try:
     from dotenv import load_dotenv
     import os
     # Load from project root
-    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
-    load_dotenv(dotenv_path=env_path)
+    env_path = project_root / ".env"
+    if env_path.exists():
+        load_dotenv(dotenv_path=str(env_path))
     # Also try loading from current working directory
     load_dotenv()
 except ImportError:
     pass  # dotenv not installed, skip loading .env
+
 from pdf_extractor import extract_text_from_corpus
 from chunker import DocumentChunker
 from embeddings import EmbeddingGenerator
@@ -32,15 +43,16 @@ def load_config(config_path: str = None) -> dict:
     Load configuration from YAML file.
     
     Args:
-        config_path: Path to config file (defaults to config.yaml in script directory)
+        config_path: Path to config file (defaults to config.yaml in config directory)
         
     Returns:
         Dictionary with configuration settings
     """
     if config_path is None:
-        # Default to config.yaml in script directory
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        config_path = os.path.join(script_dir, 'config.yaml')
+        # Default to config.yaml in config directory
+        script_dir = Path(__file__).parent
+        project_root = script_dir.parent
+        config_path = project_root / "config" / "config.yaml"
     
     if os.path.exists(config_path):
         with open(config_path, 'r') as f:

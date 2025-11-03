@@ -1,0 +1,56 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Project specific - exclude large files from Docker
+corpus*/
+*.pdf
+
+# RAG indices (build these separately or provide via volume)
+rag_index/*.index
+rag_index/*.mappings
+rag_index/*.meta
+rag_index_guidances/*.index
+rag_index_guidances/*.mappings
+rag_index_guidances/*.meta
+
+# Reference files
+_REFERENCE/
+*DEPLOYMENT*.md
+*QUICK_START*.md
+
+# Test files
+test_*.py
+*_test.py
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+
+# OS
+.DS_Store
+
+# Environment
+.env
+.env.local
+
