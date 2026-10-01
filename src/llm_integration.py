@@ -20,12 +20,51 @@ except ImportError:
     print("Warning: requests package not installed. FDA product code verification will be disabled.")
 
 FDA_API_TIMEOUT_SECONDS = 3
-GUIDANCE_MAX_TOKENS = 200  # ~80 words
-RESPONSE_MAX_TOKENS = 450  # summary capped at 200 words
-REFINED_MAX_TOKENS = 600  # refined summary of 200-300 words
+DEFAULT_LLM_MODEL = "claude-haiku-4-5"
+GUIDANCE_MAX_TOKENS = 600  # ceiling so list/itemize answers can finish
+RESPONSE_MAX_TOKENS = 1500  # summary plus citations
+REFINED_MAX_TOKENS = 1000  # refined summary of 200-300 words
 REFINED_MAX_CHUNKS = 8
 REFINED_MAX_CHUNK_CHARS = 600
 REFINED_MAX_SUB_SUMMARIES = 20
+
+_LIST_FORMAT_RE = re.compile(
+    r"\b("
+    r"list(?:s|ing|ed)?|"
+    r"itemi[sz]e(?:d)?|itemi[sz]ation|"
+    r"bullet(?:s|ed)?(?:\s+points?)?|"
+    r"enumerat(?:e|ed|ion)|"
+    r"numbered(?:\s+(?:list|items?))?|"
+    r"(?:as|in)\s+(?:a\s+)?(?:list|bullets?|points?)|"
+    r"(?:key|bullet)\s+points?|"
+    r"step[- ]by[- ]step|"
+    r"outline"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def query_requests_structured_format(query: str) -> bool:
+    """True when the user asked for a list, bullets, steps, or similar structure."""
+    return bool(_LIST_FORMAT_RE.search(query or ""))
+
+
+def response_format_instructions(query: str) -> str:
+    """Prompt text that makes the model follow the user's requested layout."""
+    if query_requests_structured_format(query):
+        return (
+            "FORMAT:\n"
+            "- The user asked for a list or itemized answer. You MUST use a Markdown list.\n"
+            "- Use \"- item\" or \"1. item\", one item per line. Put each distinct point on its own line.\n"
+            "- Do not collapse items into a paragraph. Keep items short and grounded in the documents.\n"
+            "- Prefer this list format over any other response structure in these instructions."
+        )
+    return (
+        "FORMAT:\n"
+        "- Follow any structure requested in the User Query (lists, bullets, numbered items, steps).\n"
+        "- If asked to list or itemize, use Markdown lists (\"- item\" or \"1. item\"), one item per line.\n"
+        "- If no format is requested, write a concise prose summary."
+    )
 
 _fda_session = requests.Session() if REQUESTS_AVAILABLE else None
 
@@ -127,13 +166,13 @@ class LLMGenerator:
     LLM wrapper using Claude API for text generation tasks.
     """
     
-    def __init__(self, api_key: Optional[str] = None, model_name: str = "claude-3-haiku-20240307"):
+    def __init__(self, api_key: Optional[str] = None, model_name: str = DEFAULT_LLM_MODEL):
         """
         Initialize LLM generator with Claude API.
         
         Args:
             api_key: Anthropic API key (defaults to ANTHROPIC_API_KEY env var)
-            model_name: Claude model name (default: claude-3-haiku-20240307 - simplest/cheapest)
+            model_name: Claude model name (default: claude-haiku-4-5)
         """
         if not ANTHROPIC_AVAILABLE:
             raise ImportError("anthropic package is required. Install with: pip install anthropic")
@@ -216,7 +255,7 @@ Provide a concise summary (2-3 sentences) highlighting the most important inform
             error_str = str(e)
             # Check for specific error types
             if '404' in error_str or 'not_found' in error_str.lower():
-                raise ValueError(f"Model '{self.model_name}' not found. Available models: claude-3-opus-20240229, claude-3-sonnet-20240229, claude-3-haiku-20240307. Try: --llm-model claude-3-sonnet-20240229")
+                raise ValueError(f"Model '{self.model_name}' not found. Try --llm-model {DEFAULT_LLM_MODEL}")
             elif '401' in error_str or 'unauthorized' in error_str.lower():
                 raise ValueError("API key invalid or missing. Check your ANTHROPIC_API_KEY.")
             else:
@@ -325,7 +364,8 @@ RELEVANT DOCUMENTS:
 {context}
 
 INSTRUCTIONS:
-Provide a concise, focused response (~80 words) that directly answers the query based on the FDA AI guidance documents provided. Focus on regulatory requirements, standards, and guidance specific to artificial intelligence in medical devices. Use metadata from documents (file names, sections) but do not reference product codes."""
+Provide a focused response that directly answers the query based on the FDA AI guidance documents provided. Focus on regulatory requirements, standards, and guidance specific to artificial intelligence in medical devices. Use metadata from documents (file names, sections) but do not reference product codes.
+{response_format_instructions(query)}"""
 
         return system_prompt, user_prompt
     
@@ -565,9 +605,8 @@ Produce a response with the following structure:
    - Connect to related regulatory frameworks beyond strict 510(k) requirements
    - Offer practical guidance and best practices
 
-FORMAT YOUR RESPONSE AS:
-SUMMARY:
-[Your response combining 55% FDA CDRH 510(k)-specific regulatory content with 45% generalized medical device guidance - must be under 200 words total]
+Start the answer with SUMMARY:
+{response_format_instructions(query)}
 
 CRITICAL: If verified device information was provided above, you MUST reference the exact device name and medical specialty in your response. Do NOT substitute or infer different device types."""
 
@@ -795,9 +834,8 @@ Generate a detailed, refined summary (200-300 words) that:
 5. References specific findings, requirements, or data points from the section content
 6. Maintains accuracy and cites relevant FDA regulatory context where appropriate
 
-FORMAT YOUR RESPONSE AS:
-REFINED SUMMARY:
-[Your detailed refined summary here]"""
+Start the answer with REFINED SUMMARY:
+{response_format_instructions(query)}"""
         
         return system_prompt, user_prompt
 

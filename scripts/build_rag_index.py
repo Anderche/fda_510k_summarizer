@@ -35,7 +35,7 @@ from pdf_extractor import extract_text_from_corpus
 from chunker import DocumentChunker
 from embeddings import EmbeddingGenerator
 from vector_store import VectorStore
-from llm_integration import LLMGenerator, SimpleLLMGenerator
+from llm_integration import DEFAULT_LLM_MODEL, LLMGenerator, SimpleLLMGenerator
 
 
 def load_config(config_path: str = None) -> dict:
@@ -79,7 +79,7 @@ def detect_source_type(corpus_dir: str) -> str:
 def build_rag_index(corpus_dir: str = None, output_dir: str = "rag_index", 
                    chunk_size: int = 800, chunk_overlap: int = 100,
                    generate_sub_summaries: bool = True,
-                   use_llm: bool = False, llm_model: str = "claude-3-sonnet-20240229", api_key: str = None,
+                   use_llm: bool = False, llm_model: str = DEFAULT_LLM_MODEL, api_key: str = None,
                    source_type: str = None):
     """
     Build complete RAG index from corpus.
@@ -167,7 +167,7 @@ def build_rag_index(corpus_dir: str = None, output_dir: str = "rag_index",
                 error_msg = str(e)
                 print(f"  Error initializing Claude API: {error_msg}")
                 if 'not found' in error_msg.lower() or '404' in error_msg:
-                    print(f"  Suggested fix: Use --llm-model claude-3-sonnet-20240229")
+                    print(f"  Suggested fix: Use --llm-model {DEFAULT_LLM_MODEL}")
                 print(f"  Falling back to simple template-based generator")
                 print(f"  (You can skip LLM with --no-sub-summaries to build faster)")
                 llm = SimpleLLMGenerator()
@@ -243,7 +243,7 @@ if __name__ == "__main__":
     parser.add_argument('--chunk-overlap', type=int, default=100, help='Chunk overlap in tokens (default: 100)')
     parser.add_argument('--no-sub-summaries', action='store_true', help='Disable sub-summary generation')
     parser.add_argument('--use-llm', action='store_true', help='Use Claude API for sub-summaries (requires ANTHROPIC_API_KEY)')
-    parser.add_argument('--llm-model', default='claude-3-sonnet-20240229', help='Claude model name')
+    parser.add_argument('--llm-model', default=DEFAULT_LLM_MODEL, help='Claude model name')
     parser.add_argument('--api-key', default=None, help='Anthropic API key (defaults to ANTHROPIC_API_KEY env var)')
     
     args = parser.parse_args()

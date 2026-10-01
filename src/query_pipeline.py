@@ -22,7 +22,7 @@ from typing import Callable, Dict, Iterator, List, Optional, Any, Set, Tuple
 from embeddings import EmbeddingGenerator
 from vector_store import VectorStore
 from rag_retrieval import RAGRetriever
-from llm_integration import LLMGenerator, SimpleLLMGenerator
+from llm_integration import GUIDANCE_MAX_TOKENS, LLMGenerator, RESPONSE_MAX_TOKENS, SimpleLLMGenerator
 from reference_formatter import format_multiple_references
 from query_enhancement import QueryEnhancer
 from ner_tfidf_extractor import NERTFIDFExtractor
@@ -94,10 +94,11 @@ class QueryPipeline:
             llm = None
             if hasattr(self.llm_generator, 'client') and hasattr(self.llm_generator, 'model_name'):
                 try:
+                    source_type = getattr(self.vector_store, 'source_type', None)
                     llm = ChatAnthropic(
                         model=self.llm_generator.model_name,
                         temperature=0.7,
-                        max_tokens=400
+                        max_tokens=GUIDANCE_MAX_TOKENS if source_type == 'corpus_ai_guidances' else RESPONSE_MAX_TOKENS
                     )
                 except Exception as e:
                     print(f"Warning: Could not initialize LangChain Anthropic LLM: {e}")
@@ -121,7 +122,7 @@ Context:
 
 Question: {question}
 
-Provide a concise, focused answer (~80 words) based on the context provided. Focus on regulatory requirements, standards, and guidance specific to artificial intelligence in medical devices.
+Follow any formatting requested in the question. If the question asks to list, itemize, enumerate, or give steps, answer with a Markdown list ("- item" or "1. item"), one item per line. Do not collapse those items into a paragraph. Otherwise write a concise, focused answer based on the context. Focus on regulatory requirements, standards, and guidance specific to artificial intelligence in medical devices.
 
 Answer:"""
             else:
@@ -134,7 +135,7 @@ Context:
 
 Question: {question}
 
-Provide a clear and concise answer based on the context. Include relevant details from the documents.
+Follow any formatting requested in the question. If the question asks to list, itemize, enumerate, or give steps, answer with a Markdown list ("- item" or "1. item"), one item per line. Otherwise provide a clear and concise answer based on the context. Include relevant details from the documents.
 
 Answer:"""
             

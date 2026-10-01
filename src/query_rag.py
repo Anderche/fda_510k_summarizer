@@ -21,12 +21,12 @@ except ImportError:
 from embeddings import EmbeddingGenerator
 from vector_store import VectorStore
 from query_pipeline import QueryPipeline
-from llm_integration import LLMGenerator, SimpleLLMGenerator
+from llm_integration import DEFAULT_LLM_MODEL, LLMGenerator, SimpleLLMGenerator
 from reference_formatter import format_reference_string, format_reference_markdown
 
 
 def load_rag_system(index_dir: str, product_code: str = None, use_llm: bool = False, 
-                    llm_model: str = "claude-3-haiku-20240307", api_key: str = None):
+                    llm_model: str = DEFAULT_LLM_MODEL, api_key: str = None):
     """
     Load RAG system from saved index.
     
@@ -162,7 +162,7 @@ if __name__ == "__main__":
     parser.add_argument('index_dir', help='Directory containing RAG index files')
     parser.add_argument('--product-code', help='Product code for context')
     parser.add_argument('--use-llm', action='store_true', help='Use Claude API for responses (requires ANTHROPIC_API_KEY)')
-    parser.add_argument('--llm-model', default='claude-3-haiku-20240307', help='Claude model name (default: claude-3-haiku-20240307)')
+    parser.add_argument('--llm-model', default=DEFAULT_LLM_MODEL, help=f'Claude model name (default: {DEFAULT_LLM_MODEL})')
     parser.add_argument('--api-key', default=None, help='Anthropic API key (defaults to ANTHROPIC_API_KEY env var)')
     parser.add_argument('--query', help='Single query to process (non-interactive mode)')
     parser.add_argument('-k', type=int, default=5, help='Number of chunks to retrieve')

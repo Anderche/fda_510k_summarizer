@@ -20,6 +20,7 @@ sys.path.insert(0, str(src_path))
 
 from eval_engine import EvalEngine
 from query_rag import load_rag_system
+from llm_integration import DEFAULT_LLM_MODEL
 
 
 def main():
@@ -32,7 +33,7 @@ def main():
     parser.add_argument('--product-code', help='Product code for context')
     parser.add_argument('--use-llm', action='store_true',
                        help='Use Claude API for responses (requires ANTHROPIC_API_KEY)')
-    parser.add_argument('--llm-model', default='claude-3-sonnet-20240229',
+    parser.add_argument('--llm-model', default=DEFAULT_LLM_MODEL,
                        help='Claude model name')
     parser.add_argument('--api-key', default=None,
                        help='Anthropic API key (defaults to ANTHROPIC_API_KEY env var)')

@@ -30,6 +30,7 @@ sys.path.insert(0, str(src_path))
 from query_rag import load_rag_system
 from query_pipeline import QueryPipeline
 from reference_formatter import format_multiple_references
+from llm_integration import DEFAULT_LLM_MODEL
 
 # Global variables for loaded system
 pipeline: Optional[QueryPipeline] = None
@@ -52,7 +53,7 @@ def _load_pipeline(index_dir: str) -> QueryPipeline:
         index_dir=index_dir,
         product_code=PRODUCT_CODE,
         use_llm=USE_LLM,
-        llm_model=os.getenv("LLM_MODEL", "claude-3-haiku-20240307")
+        llm_model=os.getenv("LLM_MODEL", DEFAULT_LLM_MODEL)
     )
 
 
