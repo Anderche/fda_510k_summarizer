@@ -1176,22 +1176,30 @@
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let buffer = '';
+
+            const dispatch = (raw) => {
+                let event = 'message';
+                const dataLines = [];
+                for (const line of raw.split('\n')) {
+                    if (line.startsWith('event:')) event = line.slice(6).trim();
+                    else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
+                }
+                if (!dataLines.length) return;
+                onEvent(event, JSON.parse(dataLines.join('\n')));
+            };
+
             while (true) {
                 const { done, value } = await reader.read();
-                if (done) break;
-                buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+                buffer += decoder.decode(value || new Uint8Array(), { stream: !done }).replace(/\r\n/g, '\n');
                 let sep;
                 while ((sep = buffer.indexOf('\n\n')) !== -1) {
                     const raw = buffer.slice(0, sep);
                     buffer = buffer.slice(sep + 2);
-                    let event = 'message';
-                    const dataLines = [];
-                    for (const line of raw.split('\n')) {
-                        if (line.startsWith('event:')) event = line.slice(6).trim();
-                        else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
-                    }
-                    if (!dataLines.length) continue;
-                    onEvent(event, JSON.parse(dataLines.join('\n')));
+                    dispatch(raw);
+                }
+                if (done) {
+                    if (buffer.trim()) dispatch(buffer);
+                    break;
                 }
             }
         }

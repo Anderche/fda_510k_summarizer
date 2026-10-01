@@ -72,7 +72,7 @@ python build_rag_index.py corpus_DXN --output-dir rag_index --use-llm
 - `--use-llm` - Use Claude API for generating sub-summaries (recommended for better quality)
 - `--chunk-size` - Chunk size in tokens (default: 500)
 - `--chunk-overlap` - Chunk overlap in tokens (default: 50)
-- `--llm-model` - Claude model name (default: `claude-3-5-sonnet`)
+- `--llm-model` - Claude model name (default: `claude-haiku-4-5`)
 - `--no-sub-summaries` - Disable multi-vector RAG (faster but less accurate)
 
 **Example:**
@@ -96,7 +96,7 @@ python query_rag.py rag_index --product-code DXN --use-llm
 - `rag_index` - Directory containing RAG index files
 - `--product-code` - Product code for context in responses
 - `--use-llm` - Use Claude API for generating responses (recommended)
-- `--llm-model` - Claude model name (default: `claude-3-5-sonnet`)
+- `--llm-model` - Claude model name (default: `claude-haiku-4-5`)
 - `--query` - Single query (non-interactive mode)
 - `-k` - Number of chunks to retrieve (default: 5)
 
@@ -222,7 +222,7 @@ python test_eval_engine.py
 The system reads from `.env` file or environment:
 
 - `ANTHROPIC_API_KEY` - Required for Claude API access
-- `LLM_MODEL` - Claude model name (default: `claude-3-haiku-20240307`)
+- `LLM_MODEL` - Claude model name (default: `claude-haiku-4-5`)
 - `USE_LLM` - `true`/`false` (default: `true`)
 - `INDEX_DIR` - FAISS index directory to load at startup
 - `REFINED_SUMMARY` - Set to `false` to skip the second Claude call during demos (default: `true`)
@@ -234,12 +234,11 @@ Railway may sleep the app when idle. A free [UptimeRobot](https://uptimerobot.co
 
 ### Claude Models
 
-Default: `claude-3-sonnet-20240229`
+Default: `claude-haiku-4-5`
 
 If you get 404 errors, try these known working models:
-- `claude-3-sonnet-20240229` (recommended fallback)
-- `claude-3-opus-20240229`
-- `claude-3-haiku-20240307`
+- `claude-haiku-4-5` (default, lowest cost)
+- `claude-sonnet-5-5`
 
 **Note:** If models aren't available, the system will automatically fallback to template-based generation.
 
