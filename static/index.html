@@ -245,6 +245,24 @@
             font-size: var(--text-sm);
         }
 
+        .header__tagline a,
+        .header__credit a {
+            color: inherit;
+            text-decoration: underline;
+            text-underline-offset: 2px;
+        }
+
+        .header__tagline a:hover,
+        .header__credit a:hover {
+            color: var(--color-accent);
+        }
+
+        .header__credit {
+            margin-top: var(--space-3);
+            font-size: var(--text-xs);
+            color: var(--color-text-subtle);
+        }
+
         /* Search */
         .search {
             background: var(--color-surface);
@@ -682,26 +700,6 @@
             font-size: var(--text-sm);
         }
 
-        /* Footer */
-        .footer {
-            margin-top: var(--space-10);
-            padding-top: var(--space-4);
-            border-top: 1px solid var(--color-border);
-            text-align: center;
-            font-size: var(--text-xs);
-            color: var(--color-text-subtle);
-        }
-
-        .footer a {
-            color: var(--color-text-muted);
-            text-decoration: underline;
-            text-underline-offset: 2px;
-        }
-
-        .footer a:hover {
-            color: var(--color-accent);
-        }
-
         .disclaimer {
             margin-top: var(--space-10);
             padding: var(--space-4);
@@ -711,10 +709,6 @@
             font-size: var(--text-xs);
             line-height: 1.6;
             color: var(--color-text-muted);
-        }
-
-        .disclaimer + .footer {
-            margin-top: var(--space-6);
         }
 
         .disclaimer__lead strong {
@@ -834,7 +828,8 @@
                     <svg aria-hidden="true"><use href="#icon-info"/></svg>
                 </button>
             </div>
-            <p class="header__tagline">Ask questions about the FDA's latest final and draft guidances for medical device makers.</p>
+            <p class="header__tagline">Ask about <a href="https://www.fda.gov/" target="_blank" rel="noopener noreferrer">U.S. Food and Drug Administration (FDA)</a> rules for AI in medical devices and get cited, plain-language answers instead of dense PDFs.</p>
+            <p class="header__credit">Demo purposes only. Designed by Anders Kiss. Codebase is <a href="https://github.com/Anderche/fda_510k_summarizer" target="_blank" rel="noopener noreferrer">here</a>.</p>
         </header>
 
         <form class="search" id="searchForm" novalidate>
@@ -941,10 +936,6 @@
                 </li>
             </ul>
         </aside>
-
-        <footer class="footer">
-            <p>Demo purposes only. Designed by Anders Kiss. Codebase is <a href="https://github.com/Anderche/fda_510k_summarizer" target="_blank" rel="noopener noreferrer">here</a>.</p>
-        </footer>
     </main>
 
     <dialog class="modal" id="infoDialog" aria-labelledby="infoTitle">
@@ -1169,6 +1160,104 @@
             $('responseSection').hidden = false;
         }
 
+        function beginStreamingUi() {
+            lastResult.response = '';
+            lastResult.refined_summary = '';
+            $('responseBox').innerHTML = '<p class="muted">Generating summary…</p>';
+            document.querySelector('[data-copy-target="response"]').hidden = true;
+            $('refinedSummarySection').hidden = true;
+            $('refinedSummaryBox').innerHTML = '';
+            $('referencesSection').hidden = true;
+            $('responseDetails').open = true;
+            $('responseSection').hidden = false;
+        }
+
+        async function consumeSse(response, onEvent) {
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+                let sep;
+                while ((sep = buffer.indexOf('\n\n')) !== -1) {
+                    const raw = buffer.slice(0, sep);
+                    buffer = buffer.slice(sep + 2);
+                    let event = 'message';
+                    const dataLines = [];
+                    for (const line of raw.split('\n')) {
+                        if (line.startsWith('event:')) event = line.slice(6).trim();
+                        else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
+                    }
+                    if (!dataLines.length) continue;
+                    onEvent(event, JSON.parse(dataLines.join('\n')));
+                }
+            }
+        }
+
+        async function runStreamingQuery(query) {
+            const response = await fetch('/query/stream', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+                body: JSON.stringify({ query, k: 5 })
+            });
+            const contentType = response.headers.get('content-type') || '';
+            if (!response.ok || !response.body || !contentType.includes('text/event-stream')) {
+                const data = await response.json().catch(() => ({}));
+                throw new Error(data.detail || `Stream failed with status ${response.status}`);
+            }
+
+            beginStreamingUi();
+            let sawContent = false;
+            await consumeSse(response, (event, data) => {
+                if (event === 'error') {
+                    throw new Error(data.detail || 'Streaming query failed');
+                }
+                if (event === 'references') {
+                    renderReferences(data.references);
+                    $('referencesSection').hidden = false;
+                    stopLoading();
+                    return;
+                }
+                if (event === 'response' && data.text) {
+                    if (!sawContent) {
+                        lastResult.response = '';
+                        stopLoading();
+                    }
+                    sawContent = true;
+                    lastResult.response += data.text;
+                    $('responseBox').innerHTML = renderMarkdown(lastResult.response);
+                    document.querySelector('[data-copy-target="response"]').hidden = false;
+                    return;
+                }
+                if (event === 'refined' && data.text) {
+                    sawContent = true;
+                    lastResult.refined_summary += data.text;
+                    $('refinedSummaryBox').innerHTML = renderMarkdown(lastResult.refined_summary);
+                    $('refinedSummarySection').hidden = false;
+                    $('refinedSummarySection').open = true;
+                    stopLoading();
+                }
+            });
+            if (!sawContent && !lastResult.response) {
+                $('responseBox').innerHTML = '<p class="muted">No response generated.</p>';
+            }
+        }
+
+        async function runJsonQuery(query) {
+            const response = await fetch('/query', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query, k: 5 })
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(data.detail || `Request failed with status ${response.status}`);
+            }
+            showResult(data);
+        }
+
         async function handleQuery() {
             const query = input.value.trim();
             if (!query) {
@@ -1180,21 +1269,20 @@
 
             $('emptyState').hidden = true;
             $('responseSection').hidden = true;
+            lastResult.response = '';
+            lastResult.refined_summary = '';
             submitBtn.disabled = true;
             startLoading();
 
             try {
-                const response = await fetch('/query', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ query, k: 5 })
-                });
-                const data = await response.json().catch(() => ({}));
-
-                if (!response.ok) {
-                    throw new Error(data.detail || `Request failed with status ${response.status}`);
+                try {
+                    await runStreamingQuery(query);
+                } catch (streamError) {
+                    if (lastResult.response) {
+                        throw streamError;
+                    }
+                    await runJsonQuery(query);
                 }
-                showResult(data);
             } catch (error) {
                 showError(error.message);
             } finally {

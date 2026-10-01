@@ -222,6 +222,15 @@ python test_eval_engine.py
 The system reads from `.env` file or environment:
 
 - `ANTHROPIC_API_KEY` - Required for Claude API access
+- `LLM_MODEL` - Claude model name (default: `claude-3-haiku-20240307`)
+- `USE_LLM` - `true`/`false` (default: `true`)
+- `INDEX_DIR` - FAISS index directory to load at startup
+- `REFINED_SUMMARY` - Set to `false` to skip the second Claude call during demos (default: `true`)
+- `RESPONSE_CACHE_SIZE` - In-memory LRU of finished answers (default: `128`; `0` disables)
+
+### Railway cold starts (free)
+
+Railway may sleep the app when idle. A free [UptimeRobot](https://uptimerobot.com/) HTTP monitor against `/health` every 5 minutes will keep it awake. Keeping the replica awake spends Railway trial/usage hours, so if credits are tight leave sleeping on and accept one cold start after idle.
 
 ### Claude Models
 

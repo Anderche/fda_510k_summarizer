@@ -88,7 +88,8 @@ def load_rag_system(index_dir: str, product_code: str = None, use_llm: bool = Fa
         vector_store=vector_store,
         embedding_generator=embedding_generator,
         llm_generator=llm_generator,
-        product_code=product_code
+        product_code=product_code,
+        term_cache_path=os.path.join(index_dir, "term_cache.npz")
     )
     
     print(f"RAG system loaded. Vector store contains {vector_store.get_stats()['total_vectors']} vectors.")

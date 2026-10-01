@@ -34,5 +34,6 @@ rag_index/*.meta
 rag_index_guidances/*.index
 rag_index_guidances/*.mappings
 rag_index_guidances/*.meta
+rag_index*/term_cache.npz
 
 

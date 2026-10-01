@@ -4,9 +4,10 @@ Query Enhancement Module
 Implements query expansion and multi-query generation to improve RAG retrieval.
 """
 
+import os
 import re
 import numpy as np
-from typing import List, Dict, Any, Set, Tuple
+from typing import List, Dict, Any, Optional, Set, Tuple
 from collections import Counter
 from embeddings import EmbeddingGenerator
 from vector_store import VectorStore
@@ -17,19 +18,47 @@ class QueryEnhancer:
     Enhances queries using expansion and multi-query generation.
     """
     
-    def __init__(self, embedding_generator: EmbeddingGenerator, vector_store: VectorStore):
+    def __init__(self, embedding_generator: EmbeddingGenerator, vector_store: VectorStore,
+                 term_cache_path: Optional[str] = None):
         """
         Initialize query enhancer.
         
         Args:
             embedding_generator: Embedding generator instance
             vector_store: Vector store to extract terms from
+            term_cache_path: Optional .npz path to load/save term embeddings
         """
         self.embedding_generator = embedding_generator
         self.vector_store = vector_store
+        self.term_cache_path = term_cache_path
         self._term_cache: Dict[str, np.ndarray] = {}
         self._corpus_terms: List[Tuple[str, np.ndarray]] = []
         self._cache_initialized = False
+    
+    def _load_term_cache(self) -> bool:
+        """Load term embeddings from term_cache_path. Returns True on success."""
+        if not self.term_cache_path or not os.path.exists(self.term_cache_path):
+            return False
+        try:
+            data = np.load(self.term_cache_path, allow_pickle=False)
+            terms_list = [str(t) for t in data['terms']]
+            term_embeddings = data['embeddings']
+        except Exception as e:
+            print(f"Warning: Could not load term cache from {self.term_cache_path}: {e}")
+            return False
+        self._corpus_terms = list(zip(terms_list, term_embeddings))
+        self._term_cache = dict(self._corpus_terms)
+        print(f"  Loaded {len(self._corpus_terms)} cached terms from {self.term_cache_path}")
+        return True
+    
+    def _save_term_cache(self, terms_list: List[str], term_embeddings: np.ndarray):
+        """Save term embeddings to term_cache_path (best effort)."""
+        if not self.term_cache_path:
+            return
+        try:
+            np.savez(self.term_cache_path, terms=np.array(terms_list), embeddings=term_embeddings)
+        except Exception as e:
+            print(f"Warning: Could not save term cache to {self.term_cache_path}: {e}")
     
     def _initialize_term_cache(self, max_terms: int = 500):
         """
@@ -41,6 +70,10 @@ class QueryEnhancer:
         
         # Check if vectorstore is initialized
         if self.vector_store.vectorstore is None or len(self.vector_store.chunk_mappings) == 0:
+            self._cache_initialized = True
+            return
+        
+        if self._load_term_cache():
             self._cache_initialized = True
             return
         
@@ -68,6 +101,7 @@ class QueryEnhancer:
             self._corpus_terms = list(zip(terms_list, term_embeddings))
             for term, emb in zip(terms_list, term_embeddings):
                 self._term_cache[term] = emb
+            self._save_term_cache(terms_list, term_embeddings)
         
         self._cache_initialized = True
         print(f"  Cached {len(self._corpus_terms)} terms/phrases for expansion")

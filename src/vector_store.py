@@ -52,6 +52,31 @@ class VectorStore:
         self.chunk_mappings: List[Dict[str, Any]] = []  # Maps index to chunk metadata for backward compat
         self.section_index: Dict[str, List[int]] = {}  # section_name -> list of chunk indices
         self.source_type: Optional[str] = None
+        self._sub_summary_by_chunk: Dict[Any, str] = {}  # chunk_index -> sub-summary text
+    
+    def _rebuild_sub_summary_index(self):
+        """Build chunk_index -> sub-summary text in one pass over chunk_mappings."""
+        lookup: Dict[Any, str] = {}
+        for mapping in self.chunk_mappings:
+            if mapping.get('is_sub_summary'):
+                idx = mapping.get('chunk_data', {}).get('chunk_index')
+                if idx is not None and idx not in lookup:
+                    lookup[idx] = mapping.get('sub_summary', {}).get('text', '')
+        self._sub_summary_by_chunk = lookup
+    
+    def get_sub_summary_text(self, chunk_index: Any) -> str:
+        """
+        Get the sub-summary text linked to a chunk index in O(1).
+        
+        Args:
+            chunk_index: chunk_index of the full chunk
+            
+        Returns:
+            Sub-summary text, or '' if none exists
+        """
+        if self._sub_summary_by_chunk is None:
+            self._rebuild_sub_summary_index()
+        return self._sub_summary_by_chunk.get(chunk_index, '')
     
     def add_embeddings(self, embeddings: np.ndarray, chunks: List[Dict[str, Any]]):
         """
@@ -89,6 +114,8 @@ class VectorStore:
                 if section_header not in self.section_index:
                     self.section_index[section_header] = []
                 self.section_index[section_header].append(i)
+        
+        self._rebuild_sub_summary_index()
         
         # Add to LangChain FAISS vectorstore
         if self.vectorstore is None:
@@ -136,6 +163,8 @@ class VectorStore:
                 'chunk_id': linked_chunk.get('metadata', {}).get('k_number', 'unknown') + f"_chunk_{linked_chunk.get('chunk_index', start_idx + i)}",
                 'is_sub_summary': True
             })
+        
+        self._rebuild_sub_summary_index()
         
         # Add to vectorstore
         if self.vectorstore is None:
@@ -246,6 +275,7 @@ class VectorStore:
         Args:
             filepath: Path to load the index from (directory containing FAISS index)
         """
+        self._sub_summary_by_chunk = {}
         old_format_index = f"{filepath}.index"
         new_format_dir = filepath
         
@@ -288,6 +318,7 @@ class VectorStore:
                 
                 # If we have valid data in either vectorstore or mappings, use new format
                 if len(self.chunk_mappings) > 0 or vectorstore_count > 0:
+                    self._rebuild_sub_summary_index()
                     chunks_info = f"{len(self.chunk_mappings)} chunks" if len(self.chunk_mappings) > 0 else f"{vectorstore_count} vectors (no mappings)"
                     print(f"Vector store loaded from {filepath} ({chunks_info}, {len(self.section_index)} sections)")
                     return
@@ -305,6 +336,7 @@ class VectorStore:
         if old_format_exists:
             print(f"Loading old format index from {old_format_index}...")
             self._load_old_format(filepath)
+            self._rebuild_sub_summary_index()
         else:
             raise FileNotFoundError(f"Index not found at {filepath} or {old_format_index}")
     
