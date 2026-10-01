@@ -14,12 +14,17 @@ RUN apt-get update && apt-get install -y \
 # Copy requirements first for better caching
 COPY requirements.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# CPU-only torch keeps the image ~1.5 GB smaller than the default CUDA wheel.
+# Install it first, then the rest of requirements.txt without the torch pin so
+# pip does not replace the CPU build with a larger default wheel.
+RUN grep -v '^torch==' requirements.txt > /tmp/requirements-notorch.txt && \
+    pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir -r /tmp/requirements-notorch.txt
 
-# Install FastAPI and uvicorn if not in requirements
-RUN pip install --no-cache-dir fastapi uvicorn
+# Pre-download the embedding model so the first request does not hit Hugging Face
+ENV HF_HOME=/app/.cache/huggingface
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
 
 # Copy application code
 COPY . .
@@ -39,4 +44,3 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 
 # Run the application
 CMD ["python", "app.py"]
-

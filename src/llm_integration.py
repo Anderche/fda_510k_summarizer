@@ -7,7 +7,9 @@ Uses Claude API via Anthropic SDK.
 
 import os
 import re
-from typing import List, Dict, Optional, Any
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
+from typing import Callable, Iterator, List, Dict, Optional, Any, Tuple
 from reference_formatter import format_reference_string
 
 try:
@@ -16,6 +18,59 @@ try:
 except ImportError:
     REQUESTS_AVAILABLE = False
     print("Warning: requests package not installed. FDA product code verification will be disabled.")
+
+FDA_API_TIMEOUT_SECONDS = 3
+GUIDANCE_MAX_TOKENS = 200  # ~80 words
+RESPONSE_MAX_TOKENS = 450  # summary capped at 200 words
+REFINED_MAX_TOKENS = 600  # refined summary of 200-300 words
+REFINED_MAX_CHUNKS = 8
+REFINED_MAX_CHUNK_CHARS = 600
+REFINED_MAX_SUB_SUMMARIES = 20
+
+_fda_session = requests.Session() if REQUESTS_AVAILABLE else None
+
+
+@lru_cache(maxsize=256)
+def _fetch_product_code_info(product_code: str) -> Optional[Dict[str, str]]:
+    """
+    Look up a product code in the openFDA classification endpoint.
+    
+    Network errors are raised (not returned) so that lru_cache does not cache them.
+    """
+    url = f"https://api.fda.gov/device/classification.json?search=product_code:{product_code}&limit=1"
+    response = _fda_session.get(url, timeout=FDA_API_TIMEOUT_SECONDS)
+    if response.status_code == 404:
+        # openFDA answers 404 when a search has no matches
+        return None
+    response.raise_for_status()
+    
+    data = response.json()
+    
+    # Check if results exist - data['results'] should be an array
+    if 'results' in data and isinstance(data['results'], list) and len(data['results']) > 0:
+        result = data['results'][0]
+        
+        # Extract device information
+        device_name = result.get('device_name', '')
+        medical_specialty = result.get('medical_specialty_description', '')
+        
+        # Only return if we have at least device_name
+        if device_name:
+            return {
+                'device_name': device_name,
+                'medical_specialty_description': medical_specialty if medical_specialty else 'Not specified'
+            }
+        # Log if we got results but no device_name
+        print(f"Warning: FDA API returned results for product code {product_code} but no device_name found")
+    else:
+        # Check if API returned no results
+        if 'meta' in data and 'results' in data.get('meta', {}):
+            meta_results = data['meta'].get('results', {})
+            total = meta_results.get('total', 0)
+            if total != 0:
+                print(f"Warning: FDA API returned meta.total={total} but no results array found")
+    
+    return None
 
 try:
     import nltk
@@ -167,17 +222,77 @@ Provide a concise summary (2-3 sentences) highlighting the most important inform
             else:
                 raise e
     
-    def _generate_guidance_response(self, query: str, context_chunks: List[Dict[str, Any]]) -> str:
+    def _complete(self, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float) -> str:
+        """Run a single Claude completion and return its stripped text ('' if empty)."""
+        message = self.client.messages.create(
+            model=self.model_name,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=system_prompt,
+            messages=[
+                {"role": "user", "content": user_prompt}
+            ]
+        )
+        if message.content and len(message.content) > 0:
+            return message.content[0].text.strip()
+        return ''
+    
+    def _stream_text(self, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float) -> Iterator[str]:
+        """Stream text deltas from a Claude completion."""
+        with self.client.messages.stream(
+            model=self.model_name,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=system_prompt,
+            messages=[
+                {"role": "user", "content": user_prompt}
+            ]
+        ) as stream:
+            yield from stream.text_stream
+    
+    def _stream_with_fallback(self, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float,
+                              fallback: Optional[Callable[[], Optional[str]]] = None,
+                              required_prefix: Optional[str] = None) -> Iterator[str]:
         """
-        Generate a simplified response for FDA guidance documents.
+        Stream a completion, optionally forcing it to start with required_prefix.
+        If nothing was streamed (error or empty output), yield the fallback text instead.
+        """
+        emitted = False
+        pending = ''
         
-        Args:
-            query: User's query/question
-            context_chunks: List of retrieved chunk dictionaries with 'text' key
-            
-        Returns:
-            Generated response text (~80 words)
-        """
+        def with_prefix(text: str) -> str:
+            text = text.lstrip()
+            if required_prefix is None or text.startswith(required_prefix):
+                return text
+            return f"{required_prefix}\n{text}"
+        
+        try:
+            for text in self._stream_text(system_prompt, user_prompt, max_tokens, temperature):
+                if not emitted:
+                    pending += text
+                    stripped = pending.lstrip()
+                    if not stripped:
+                        continue
+                    # Hold back output until we know whether the model wrote the prefix itself
+                    if required_prefix and len(stripped) < len(required_prefix) and required_prefix.startswith(stripped):
+                        continue
+                    text = with_prefix(pending)
+                if text:
+                    emitted = True
+                    yield text
+            if not emitted and pending.strip():
+                emitted = True
+                yield with_prefix(pending)
+        except Exception as e:
+            print(f"Error streaming response: {e}")
+        
+        if not emitted and fallback is not None:
+            fallback_text = fallback()
+            if fallback_text:
+                yield fallback_text
+    
+    def _build_guidance_prompts(self, query: str, context_chunks: List[Dict[str, Any]]) -> Tuple[str, str]:
+        """Build (system_prompt, user_prompt) for FDA guidance documents."""
         # Build context from chunks with references
         context_parts = []
         total_length = 0
@@ -212,30 +327,32 @@ RELEVANT DOCUMENTS:
 INSTRUCTIONS:
 Provide a concise, focused response (~80 words) that directly answers the query based on the FDA AI guidance documents provided. Focus on regulatory requirements, standards, and guidance specific to artificial intelligence in medical devices. Use metadata from documents (file names, sections) but do not reference product codes."""
 
-        try:
-            message = self.client.messages.create(
-                model=self.model_name,
-                max_tokens=200,  # Limit to ~80 words
-                temperature=0.7,
-                system=system_prompt,
-                messages=[
-                    {"role": "user", "content": user_prompt}
-                ]
-            )
-            
-            # Extract text from response
-            if message.content and len(message.content) > 0:
-                response_text = message.content[0].text.strip()
-                # Ensure it starts with SUMMARY:
-                if not response_text.strip().startswith("SUMMARY:"):
-                    response_text = "SUMMARY:\n" + response_text
-                return response_text
-            else:
-                return self._generate_fallback_summary(query, context_chunks)
+        return system_prompt, user_prompt
+    
+    def _generate_guidance_response(self, query: str, context_chunks: List[Dict[str, Any]]) -> str:
+        """
+        Generate a simplified response for FDA guidance documents.
         
+        Args:
+            query: User's query/question
+            context_chunks: List of retrieved chunk dictionaries with 'text' key
+            
+        Returns:
+            Generated response text (~80 words)
+        """
+        system_prompt, user_prompt = self._build_guidance_prompts(query, context_chunks)
+        try:
+            response_text = self._complete(system_prompt, user_prompt, GUIDANCE_MAX_TOKENS, 0.7)
         except Exception as e:
             print(f"Error generating guidance response: {e}")
             return self._generate_fallback_summary(query, context_chunks)
+        
+        if not response_text:
+            return self._generate_fallback_summary(query, context_chunks)
+        # Ensure it starts with SUMMARY:
+        if not response_text.startswith("SUMMARY:"):
+            response_text = "SUMMARY:\n" + response_text
+        return response_text
     
     def _generate_fallback_summary(self, query: str, context_chunks: List[Dict[str, Any]]) -> str:
         """
@@ -330,40 +447,7 @@ Provide a concise, focused response (~80 words) that directly answers the query 
             return None
         
         try:
-            url = f"https://api.fda.gov/device/classification.json?search=product_code:{product_code}&limit=1"
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-            
-            data = response.json()
-            
-            # Check if results exist - data['results'] should be an array
-            if 'results' in data and isinstance(data['results'], list) and len(data['results']) > 0:
-                result = data['results'][0]
-                
-                # Extract device information
-                device_name = result.get('device_name', '')
-                medical_specialty = result.get('medical_specialty_description', '')
-                
-                # Only return if we have at least device_name
-                if device_name:
-                    return {
-                        'device_name': device_name,
-                        'medical_specialty_description': medical_specialty if medical_specialty else 'Not specified'
-                    }
-                else:
-                    # Log if we got results but no device_name
-                    print(f"Warning: FDA API returned results for product code {product_code} but no device_name found")
-            else:
-                # Check if API returned no results
-                if 'meta' in data and 'results' in data.get('meta', {}):
-                    meta_results = data['meta'].get('results', {})
-                    total = meta_results.get('total', 0)
-                    if total == 0:
-                        # No results found for this product code - this is normal
-                        pass
-                    else:
-                        print(f"Warning: FDA API returned meta.total={total} but no results array found")
-                        
+            return _fetch_product_code_info(product_code)
         except requests.exceptions.RequestException as e:
             # Network or HTTP errors
             print(f"Warning: Failed to fetch FDA product code data for {product_code}: {e}")
@@ -376,27 +460,31 @@ Provide a concise, focused response (~80 words) that directly answers the query 
         
         return None
     
-    def generate_response(self, query: str, context_chunks: List[Dict[str, Any]], product_code: Optional[str] = None,
-                         query_ner: Optional[str] = None, query_tfidf: Optional[str] = None, 
-                         context_sections: Optional[str] = None, source_type: Optional[str] = None) -> str:
-        """
-        Generate a response to a user query based on retrieved context.
+    def _find_verified_device_info(self, query: str, product_code: Optional[str]) -> Optional[Dict[str, str]]:
+        """Verify the provided product code, else the first verifiable code found in the query."""
+        # FIRST: Check provided product_code parameter (highest priority)
+        if product_code:
+            device_info = self._verify_product_code(product_code.upper())
+            if device_info:
+                print(f"✓ Verified product code '{product_code.upper()}' via FDA API: {device_info['device_name']} ({device_info['medical_specialty_description']})")
+                return device_info
         
-        Args:
-            query: User's query/question
-            context_chunks: List of retrieved chunk dictionaries with 'text' key
-            product_code: Optional product code for context (not used for guidance documents)
-            query_ner: NER extraction results from query
-            query_tfidf: TF-IDF terms from query
-            context_sections: Sections found in retrieved context
-            source_type: Source type ('corpus_ai_guidances' or '510k')
-            
-        Returns:
-            Generated response text
-        """
-        # Use simplified prompt for guidance documents
-        if source_type == 'corpus_ai_guidances':
-            return self._generate_guidance_response(query, context_chunks)
+        # SECOND: Extract and verify codes from query (only if product_code wasn't provided or didn't verify)
+        extracted_codes = self._extract_product_codes(query)
+        if not extracted_codes:
+            return None
+        with ThreadPoolExecutor(max_workers=min(len(extracted_codes), 4)) as pool:
+            results = list(pool.map(self._verify_product_code, extracted_codes))
+        for code, device_info in zip(extracted_codes, results):
+            if device_info:
+                print(f"✓ Verified product code '{code}' via FDA API (from query): {device_info['device_name']} ({device_info['medical_specialty_description']})")
+                return device_info  # Use first verified code
+        return None
+    
+    def _build_response_prompts(self, query: str, context_chunks: List[Dict[str, Any]], product_code: Optional[str] = None,
+                                query_ner: Optional[str] = None, query_tfidf: Optional[str] = None,
+                                context_sections: Optional[str] = None) -> Tuple[str, str]:
+        """Build (system_prompt, user_prompt) for 510(k) documents."""
         # Build context from chunks with references
         context_parts = []
         total_length = 0
@@ -426,24 +514,7 @@ Provide a concise, focused response (~80 words) that directly answers the query 
         context = "\n\n".join(context_parts)
         
         # Extract and verify product codes - PRIORITIZE provided product_code parameter
-        verified_device_info = None
-        
-        # FIRST: Check provided product_code parameter (highest priority)
-        if product_code:
-            device_info = self._verify_product_code(product_code.upper())
-            if device_info:
-                verified_device_info = device_info
-                print(f"✓ Verified product code '{product_code.upper()}' via FDA API: {device_info['device_name']} ({device_info['medical_specialty_description']})")
-        
-        # SECOND: Extract and verify codes from query (only if product_code wasn't provided or didn't verify)
-        if not verified_device_info:
-            extracted_codes = self._extract_product_codes(query)
-            for code in extracted_codes:
-                device_info = self._verify_product_code(code)
-                if device_info:
-                    verified_device_info = device_info
-                    print(f"✓ Verified product code '{code}' via FDA API (from query): {device_info['device_name']} ({device_info['medical_specialty_description']})")
-                    break  # Use first verified code
+        verified_device_info = self._find_verified_device_info(query, product_code)
         
         # Build device context string for prompt
         device_context_section = ""
@@ -500,28 +571,59 @@ SUMMARY:
 
 CRITICAL: If verified device information was provided above, you MUST reference the exact device name and medical specialty in your response. Do NOT substitute or infer different device types."""
 
-        try:
-            message = self.client.messages.create(
-                model=self.model_name,
-                max_tokens=1500,  # Increased for summary + references
-                temperature=0.7,
-                system=system_prompt,
-                messages=[
-                    {"role": "user", "content": user_prompt}
-                ]
-            )
-            
-            # Extract text from response
-            if message.content and len(message.content) > 0:
-                return message.content[0].text.strip()
-            else:
-                # Fallback: generate summary from chunks
-                return self._generate_fallback_summary(query, context_chunks)
+        return system_prompt, user_prompt
+    
+    def generate_response(self, query: str, context_chunks: List[Dict[str, Any]], product_code: Optional[str] = None,
+                         query_ner: Optional[str] = None, query_tfidf: Optional[str] = None, 
+                         context_sections: Optional[str] = None, source_type: Optional[str] = None) -> str:
+        """
+        Generate a response to a user query based on retrieved context.
         
+        Args:
+            query: User's query/question
+            context_chunks: List of retrieved chunk dictionaries with 'text' key
+            product_code: Optional product code for context (not used for guidance documents)
+            query_ner: NER extraction results from query
+            query_tfidf: TF-IDF terms from query
+            context_sections: Sections found in retrieved context
+            source_type: Source type ('corpus_ai_guidances' or '510k')
+            
+        Returns:
+            Generated response text
+        """
+        # Use simplified prompt for guidance documents
+        if source_type == 'corpus_ai_guidances':
+            return self._generate_guidance_response(query, context_chunks)
+        
+        system_prompt, user_prompt = self._build_response_prompts(
+            query, context_chunks, product_code, query_ner, query_tfidf, context_sections
+        )
+        try:
+            response_text = self._complete(system_prompt, user_prompt, RESPONSE_MAX_TOKENS, 0.7)
         except Exception as e:
             print(f"Error generating response: {e}")
             # Generate a simple summary from top chunks as fallback
             return self._generate_fallback_summary(query, context_chunks)
+        
+        return response_text or self._generate_fallback_summary(query, context_chunks)
+    
+    def stream_response(self, query: str, context_chunks: List[Dict[str, Any]], product_code: Optional[str] = None,
+                        query_ner: Optional[str] = None, query_tfidf: Optional[str] = None,
+                        context_sections: Optional[str] = None, source_type: Optional[str] = None) -> Iterator[str]:
+        """Streaming version of generate_response; yields text deltas."""
+        def fallback() -> str:
+            return self._generate_fallback_summary(query, context_chunks)
+        
+        if source_type == 'corpus_ai_guidances':
+            system_prompt, user_prompt = self._build_guidance_prompts(query, context_chunks)
+            yield from self._stream_with_fallback(system_prompt, user_prompt, GUIDANCE_MAX_TOKENS, 0.7,
+                                                  fallback=fallback, required_prefix="SUMMARY:")
+            return
+        
+        system_prompt, user_prompt = self._build_response_prompts(
+            query, context_chunks, product_code, query_ner, query_tfidf, context_sections
+        )
+        yield from self._stream_with_fallback(system_prompt, user_prompt, RESPONSE_MAX_TOKENS, 0.7, fallback=fallback)
     
     def generate_refined_summary(self, query: str, context_chunks: List[Dict[str, Any]], 
                                   vector_store: Any, ner_tfidf_extractor: Any,
@@ -539,6 +641,28 @@ CRITICAL: If verified device information was provided above, you MUST reference 
         Returns:
             Refined summary text, or None if unable to generate
         """
+        prompts = self._build_refined_prompts(query, context_chunks, vector_store, ner_tfidf_extractor, product_code)
+        if prompts is None:
+            return None
+        try:
+            return self._complete(*prompts, REFINED_MAX_TOKENS, 0.6) or None
+        except Exception as e:
+            print(f"Error generating refined summary: {e}")
+            return None
+    
+    def stream_refined_summary(self, query: str, context_chunks: List[Dict[str, Any]],
+                               vector_store: Any, ner_tfidf_extractor: Any,
+                               product_code: Optional[str] = None) -> Iterator[str]:
+        """Streaming version of generate_refined_summary; yields nothing if no summary can be built."""
+        prompts = self._build_refined_prompts(query, context_chunks, vector_store, ner_tfidf_extractor, product_code)
+        if prompts is None:
+            return
+        yield from self._stream_with_fallback(*prompts, REFINED_MAX_TOKENS, 0.6)
+    
+    def _build_refined_prompts(self, query: str, context_chunks: List[Dict[str, Any]],
+                               vector_store: Any, ner_tfidf_extractor: Any,
+                               product_code: Optional[str] = None) -> Optional[Tuple[str, str]]:
+        """Build (system_prompt, user_prompt) for the refined summary, or None if there is no usable context."""
         if not context_chunks:
             return None
         
@@ -608,17 +732,13 @@ CRITICAL: If verified device information was provided above, you MUST reference 
         
         # Now find sub-summaries for all section chunks
         for chunk_data in all_section_chunks:
+            if len(sub_summaries) >= REFINED_MAX_SUB_SUMMARIES:
+                break
             chunk_idx = chunk_data.get('chunk_index')
             if chunk_idx is not None:
-                # Find matching sub-summary in vector_store
-                for mapping in vector_store.chunk_mappings:
-                    if (mapping.get('is_sub_summary') and 
-                        mapping.get('chunk_data', {}).get('chunk_index') == chunk_idx):
-                        sub_summary_data = mapping.get('sub_summary', {})
-                        sub_summary_text = sub_summary_data.get('text', '')
-                        if sub_summary_text:
-                            sub_summaries.append(sub_summary_text)
-                        break
+                sub_summary_text = vector_store.get_sub_summary_text(chunk_idx)
+                if sub_summary_text:
+                    sub_summaries.append(sub_summary_text)
         
         if not sub_summaries and not full_chunk_texts:
             return None
@@ -637,8 +757,8 @@ CRITICAL: If verified device information was provided above, you MUST reference 
         # Include full chunk texts (limit to avoid exceeding token limits)
         if full_chunk_texts:
             # Limit number of chunks and length to stay within context limits
-            max_chunks = min(len(full_chunk_texts), 15)  # Limit to top 15 chunks
-            max_chunk_length = 1000  # Limit each chunk to 1000 chars
+            max_chunks = min(len(full_chunk_texts), REFINED_MAX_CHUNKS)
+            max_chunk_length = REFINED_MAX_CHUNK_CHARS
             
             chunk_texts_formatted = []
             for i, chunk_text in enumerate(full_chunk_texts[:max_chunks], 1):
@@ -679,24 +799,7 @@ FORMAT YOUR RESPONSE AS:
 REFINED SUMMARY:
 [Your detailed refined summary here]"""
         
-        try:
-            message = self.client.messages.create(
-                model=self.model_name,
-                max_tokens=1000,  # Increased for detailed 200-300 word summary
-                temperature=0.6,  # Lower temperature for more focused responses
-                system=system_prompt,
-                messages=[
-                    {"role": "user", "content": user_prompt}
-                ]
-            )
-            
-            # Extract text from response
-            if message.content and len(message.content) > 0:
-                return message.content[0].text.strip()
-        except Exception as e:
-            print(f"Error generating refined summary: {e}")
-        
-        return None
+        return system_prompt, user_prompt
 
 
 class SimpleLLMGenerator:
@@ -761,3 +864,12 @@ class SimpleLLMGenerator:
                 response_parts.append(f"\n{chunk_text}")
         
         return "\n".join(response_parts)
+    
+    def stream_response(self, *args, **kwargs) -> Iterator[str]:
+        """Yield the template response in one piece (same signature as generate_response)."""
+        yield self.generate_response(*args, **kwargs)
+
+    def stream_refined_summary(self, *args, **kwargs) -> Iterator[str]:
+        """Simple generator has no refined-summary path."""
+        return
+        yield  # pragma: no cover — keeps this a generator

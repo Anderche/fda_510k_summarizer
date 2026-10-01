@@ -16,7 +16,9 @@ try:
 except ImportError:
     pass
 
-from typing import Dict, List, Optional, Any, Set, Tuple
+import time
+from concurrent.futures import ThreadPoolExecutor
+from typing import Callable, Dict, Iterator, List, Optional, Any, Set, Tuple
 from embeddings import EmbeddingGenerator
 from vector_store import VectorStore
 from rag_retrieval import RAGRetriever
@@ -45,7 +47,7 @@ class QueryPipeline:
     def __init__(self, vector_store: VectorStore, embedding_generator: EmbeddingGenerator, 
                  llm_generator: Optional[LLMGenerator] = None, product_code: Optional[str] = None,
                  use_query_expansion: bool = True, use_multi_query: bool = True,
-                 use_langchain_chain: bool = True):
+                 use_langchain_chain: bool = True, term_cache_path: Optional[str] = None):
         """
         Initialize query pipeline.
         
@@ -57,6 +59,7 @@ class QueryPipeline:
             use_query_expansion: Whether to use query expansion
             use_multi_query: Whether to use multi-query generation
             use_langchain_chain: Whether to use LangChain RetrievalQA chain
+            term_cache_path: Optional .npz path for persisted query-expansion term embeddings
         """
         self.vector_store = vector_store
         self.embedding_generator = embedding_generator
@@ -66,8 +69,11 @@ class QueryPipeline:
         self.use_query_expansion = use_query_expansion
         self.use_multi_query = use_multi_query
         self.use_langchain_chain = use_langchain_chain and LANGCHAIN_AVAILABLE
-        self.query_enhancer = QueryEnhancer(embedding_generator, vector_store)
+        self.query_enhancer = QueryEnhancer(embedding_generator, vector_store, term_cache_path=term_cache_path)
+        if self.use_query_expansion:
+            self.query_enhancer._initialize_term_cache()
         self.ner_tfidf_extractor = NERTFIDFExtractor()
+        self.refined_summary_enabled = os.getenv("REFINED_SUMMARY", "true").lower() == "true"
         
         # Initialize LangChain chain if enabled and available
         self.langchain_qa_chain: Optional[BaseRetrievalQAChain] = None
@@ -91,7 +97,7 @@ class QueryPipeline:
                     llm = ChatAnthropic(
                         model=self.llm_generator.model_name,
                         temperature=0.7,
-                        max_tokens=500
+                        max_tokens=400
                     )
                 except Exception as e:
                     print(f"Warning: Could not initialize LangChain Anthropic LLM: {e}")
@@ -209,19 +215,61 @@ Answer:"""
             # Fallback to custom pipeline
             return self._process_with_custom_pipeline(query, k, min_similarity)
     
+    @property
+    def refined_summary_supported(self) -> bool:
+        """Whether a refined summary (second LLM call) will be generated."""
+        return self.refined_summary_enabled and hasattr(self.llm_generator, 'generate_refined_summary')
+    
+    def _generate_refined_summary(self, query: str, context_chunks: List[Dict[str, Any]]) -> Optional[str]:
+        """Generate the refined summary, returning None on any failure."""
+        if not self.refined_summary_supported or not context_chunks:
+            return None
+        try:
+            return self.llm_generator.generate_refined_summary(
+                query=query,
+                context_chunks=context_chunks,
+                vector_store=self.vector_store,
+                ner_tfidf_extractor=self.ner_tfidf_extractor,
+                product_code=self.product_code
+            )
+        except Exception as e:
+            print(f"Error generating refined summary: {e}")
+            return None
+    
+    def _answer_with_refined_summary(self, answer_fn: Callable[[], str], query: str,
+                                     context_chunks: List[Dict[str, Any]],
+                                     timings: Dict[str, float]) -> Tuple[str, Optional[str]]:
+        """Run the main answer and the refined summary LLM calls concurrently."""
+        def timed(name: str, fn: Callable[[], Any]) -> Any:
+            start = time.perf_counter()
+            try:
+                return fn()
+            finally:
+                timings[name] = round((time.perf_counter() - start) * 1000, 1)
+        
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            refined_future = None
+            if self.refined_summary_supported and context_chunks:
+                refined_future = pool.submit(timed, 'llm_refined',
+                                             lambda: self._generate_refined_summary(query, context_chunks))
+            answer = timed('llm_response', answer_fn)
+            refined_summary = refined_future.result() if refined_future else None
+        return answer, refined_summary
+    
     def _process_with_langchain_chain(self, query: str, k: int = 5, min_similarity: float = 0.0) -> Dict[str, Any]:
         """Process query using LangChain RetrievalQA chain."""
         try:
-            # Update retriever search_kwargs
-            if hasattr(self.retriever.retriever, 'search_kwargs'):
-                self.retriever.retriever.search_kwargs["k"] = k
+            timings: Dict[str, float] = {}
+            total_start = time.perf_counter()
             
-            # Run the chain
-            result = self.langchain_qa_chain.invoke({"query": query})
-            
-            # Extract response and source documents
-            response_text = result.get('result', '')
-            source_docs = result.get('source_documents', [])
+            # Retrieve first so the refined summary can run alongside the answer
+            retriever = self.retriever.retriever
+            if retriever is None:
+                raise ValueError("LangChain retriever is not available")
+            if hasattr(retriever, 'search_kwargs'):
+                retriever.search_kwargs["k"] = k
+            source_docs = retriever.invoke(query)
+            timings['retrieval'] = round((time.perf_counter() - total_start) * 1000, 1)
             
             # Convert LangChain documents to chunk format
             retrieved_chunks = []
@@ -238,23 +286,22 @@ Answer:"""
             # Format references
             references = format_multiple_references(retrieved_chunks, format_type="dict")
             
+            def answer() -> str:
+                result = self.langchain_qa_chain.combine_documents_chain.invoke(
+                    {"input_documents": source_docs, "question": query}
+                )
+                if isinstance(result, str):
+                    return result
+                return result.get('output_text') or result.get('text') or ''
+            
+            response_text, refined_summary = self._answer_with_refined_summary(
+                answer, query, retrieved_chunks, timings
+            )
+            timings['total'] = round((time.perf_counter() - total_start) * 1000, 1)
+            
             # Ensure response starts with SUMMARY:
             if not response_text.strip().startswith("SUMMARY:"):
                 response_text = "SUMMARY:\n" + response_text
-            
-            # Generate refined summary if supported
-            refined_summary = None
-            if hasattr(self.llm_generator, 'generate_refined_summary') and retrieved_chunks:
-                try:
-                    refined_summary = self.llm_generator.generate_refined_summary(
-                        query=query,
-                        context_chunks=retrieved_chunks,
-                        vector_store=self.vector_store,
-                        ner_tfidf_extractor=self.ner_tfidf_extractor,
-                        product_code=self.product_code
-                    )
-                except Exception as e:
-                    print(f"Error generating refined summary: {e}")
             
             return {
                 'query': query,
@@ -266,7 +313,8 @@ Answer:"""
                     'num_retrieved': len(retrieved_chunks),
                     'k': k,
                     'method': 'langchain_retrieval_chain',
-                    'similarity_scores': [chunk.get('similarity_score', 0.0) for chunk in retrieved_chunks]
+                    'similarity_scores': [chunk.get('similarity_score', 0.0) for chunk in retrieved_chunks],
+                    'timings_ms': timings
                 }
             }
             
@@ -274,8 +322,14 @@ Answer:"""
             print(f"Error in LangChain chain: {e}, falling back to custom pipeline")
             return self._process_with_custom_pipeline(query, k, min_similarity)
     
-    def _process_with_custom_pipeline(self, query: str, k: int = 5, min_similarity: float = 0.0) -> Dict[str, Any]:
-        """Process query using custom pipeline (original implementation)."""
+    def retrieve_only(self, query: str, k: int = 5, min_similarity: float = 0.0) -> Dict[str, Any]:
+        """
+        Run the retrieval half of the custom pipeline without calling the LLM.
+        
+        Returns:
+            Dictionary with 'retrieved_chunks', 'query_ner', 'query_tfidf',
+            'context_sections', 'queries_used' and 'sections_used'
+        """
         all_retrieved = []
         queries_used = [query]
         
@@ -317,15 +371,79 @@ Answer:"""
                 query, k=k*2, min_similarity=min_similarity, use_section_filtering=False
             )})
         
-        # Step 4: Query expansion (optional)
-        if self.use_query_expansion:
-            expanded_query = self.query_enhancer.expand_query(query, top_n=5, similarity_threshold=0.6)
-            if expanded_query != query:
-                queries_used.append(f"Expanded: {expanded_query}")
-        
-        # Step 5: Merge and deduplicate results
+        # Step 4: Merge and deduplicate results
         merged_chunks = self._merge_results(all_retrieved)
         retrieved = merged_chunks[:k]
+        
+        context_sections = []
+        for chunk in retrieved:
+            section = chunk.get('metadata', {}).get('section_header')
+            if section and section not in context_sections:
+                context_sections.append(section)
+        
+        return {
+            'retrieved_chunks': retrieved,
+            'query_ner': query_ner,
+            'query_tfidf': query_tfidf,
+            'context_sections': ', '.join(context_sections) if context_sections else 'N/A',
+            'queries_used': queries_used,
+            'sections_used': sections_used
+        }
+    
+    def warm_up(self):
+        """Exercise retrieval once (no LLM calls) so the first real query skips model/index warm-up."""
+        start = time.perf_counter()
+        try:
+            self.retrieve_only("warmup", k=1)
+            retriever = self.retriever.retriever
+            if retriever is not None:
+                if hasattr(retriever, 'search_kwargs'):
+                    retriever.search_kwargs["k"] = 1
+                retriever.invoke("warmup")
+            self.vector_store.get_sub_summary_text(None)
+        except Exception as e:
+            print(f"Warning: warm-up failed: {e}")
+            return
+        print(f"Pipeline warm-up finished in {(time.perf_counter() - start) * 1000:.0f} ms")
+    
+    def stream_answer(self, query: str, retrieval: Dict[str, Any]) -> Iterator[str]:
+        """Stream the main answer for a retrieve_only() result."""
+        yield from self.llm_generator.stream_response(
+            query,
+            retrieval['retrieved_chunks'],
+            product_code=self.product_code,
+            query_ner=retrieval['query_ner'],
+            query_tfidf=retrieval['query_tfidf'],
+            context_sections=retrieval['context_sections'],
+            source_type=getattr(self.vector_store, 'source_type', None)
+        )
+    
+    def stream_refined(self, query: str, retrieval: Dict[str, Any]) -> Iterator[str]:
+        """Stream the refined summary for a retrieve_only() result (yields nothing if disabled)."""
+        if not self.refined_summary_supported or not retrieval['retrieved_chunks']:
+            return
+        if not hasattr(self.llm_generator, 'stream_refined_summary'):
+            refined_summary = self._generate_refined_summary(query, retrieval['retrieved_chunks'])
+            if refined_summary:
+                yield refined_summary
+            return
+        yield from self.llm_generator.stream_refined_summary(
+            query=query,
+            context_chunks=retrieval['retrieved_chunks'],
+            vector_store=self.vector_store,
+            ner_tfidf_extractor=self.ner_tfidf_extractor,
+            product_code=self.product_code
+        )
+    
+    def _process_with_custom_pipeline(self, query: str, k: int = 5, min_similarity: float = 0.0) -> Dict[str, Any]:
+        """Process query using custom pipeline (original implementation)."""
+        timings: Dict[str, float] = {}
+        total_start = time.perf_counter()
+        
+        retrieval = self.retrieve_only(query, k=k, min_similarity=min_similarity)
+        timings['retrieval'] = round((time.perf_counter() - total_start) * 1000, 1)
+        retrieved = retrieval['retrieved_chunks']
+        queries_used = retrieval['queries_used']
         
         if not retrieved:
             return {
@@ -336,45 +454,30 @@ Answer:"""
                 'metadata': {
                     'num_retrieved': 0,
                     'k': k,
-                    'queries_used': queries_used
+                    'queries_used': queries_used,
+                    'timings_ms': timings
                 }
             }
         
-        # Step 6: Generate response
-        context_chunks = [chunk for chunk in retrieved]
-        context_sections = []
-        for chunk in context_chunks:
-            section = chunk.get('metadata', {}).get('section_header')
-            if section and section not in context_sections:
-                context_sections.append(section)
-        
+        # Generate response and refined summary concurrently
         source_type = getattr(self.vector_store, 'source_type', None)
-        response = self.llm_generator.generate_response(
-            query,
-            context_chunks,
-            product_code=self.product_code,
-            query_ner=query_ner,
-            query_tfidf=query_tfidf,
-            context_sections=', '.join(context_sections) if context_sections else 'N/A',
-            source_type=source_type
-        )
+        
+        def answer() -> str:
+            return self.llm_generator.generate_response(
+                query,
+                retrieved,
+                product_code=self.product_code,
+                query_ner=retrieval['query_ner'],
+                query_tfidf=retrieval['query_tfidf'],
+                context_sections=retrieval['context_sections'],
+                source_type=source_type
+            )
+        
+        response, refined_summary = self._answer_with_refined_summary(answer, query, retrieved, timings)
+        timings['total'] = round((time.perf_counter() - total_start) * 1000, 1)
         
         # Format references
         references = format_multiple_references(retrieved, format_type="dict")
-        
-        # Generate refined summary if supported
-        refined_summary = None
-        if hasattr(self.llm_generator, 'generate_refined_summary') and retrieved:
-            try:
-                refined_summary = self.llm_generator.generate_refined_summary(
-                    query=query,
-                    context_chunks=context_chunks,
-                    vector_store=self.vector_store,
-                    ner_tfidf_extractor=self.ner_tfidf_extractor,
-                    product_code=self.product_code
-                )
-            except Exception as e:
-                print(f"Error generating refined summary: {e}")
         
         return {
             'query': query,
@@ -388,9 +491,10 @@ Answer:"""
                 'method': 'custom_pipeline',
                 'similarity_scores': [chunk.get('similarity_score', 0.0) for chunk in retrieved],
                 'queries_used': queries_used,
-                'sections_matched': sections_used,
-                'expansion_used': self.use_query_expansion,
-                'multi_query_used': self.use_multi_query
+                'sections_matched': retrieval['sections_used'],
+                'expansion_used': False,
+                'multi_query_used': self.use_multi_query,
+                'timings_ms': timings
             }
         }
     

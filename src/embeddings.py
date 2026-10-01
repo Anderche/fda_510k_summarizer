@@ -17,6 +17,7 @@ try:
 except ImportError:
     pass
 
+from functools import lru_cache
 from sentence_transformers import SentenceTransformer
 from typing import List, Dict, Any
 import numpy as np
@@ -37,7 +38,14 @@ class EmbeddingGenerator:
         print(f"Loading embedding model: {model_name}...")
         self.model = SentenceTransformer(model_name)
         self.model_name = model_name
+        # Per-instance cache: repeated queries and section names skip the model entirely
+        self._embed_cached = lru_cache(maxsize=1024)(self._encode_one)
         print(f"Embedding model loaded successfully.")
+    
+    def _encode_one(self, text: str) -> np.ndarray:
+        embedding = self.model.encode(text, convert_to_numpy=True)
+        embedding.setflags(write=False)  # shared between callers via the cache
+        return embedding
     
     def embed_text(self, text: str) -> np.ndarray:
         """
@@ -47,9 +55,9 @@ class EmbeddingGenerator:
             text: Text to embed
             
         Returns:
-            Embedding vector as numpy array
+            Embedding vector as numpy array (read-only; copy before modifying)
         """
-        return self.model.encode(text, convert_to_numpy=True)
+        return self._embed_cached(text)
     
     def embed_texts(self, texts: List[str], batch_size: int = 32, show_progress: bool = True) -> np.ndarray:
         """

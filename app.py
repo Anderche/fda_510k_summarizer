@@ -4,15 +4,20 @@ FastAPI Web Server for FDA 510(k) Summarizer RAG System
 Deployable web API for querying FDA 510(k) documents and guidance materials.
 """
 
+import json
 import os
+import queue
 import sys
+import threading
+import time
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Iterator, Tuple
 
 # Import the RAG system components
 import sys
@@ -31,6 +36,58 @@ pipeline: Optional[QueryPipeline] = None
 INDEX_DIR: Optional[str] = None
 PRODUCT_CODE: Optional[str] = None
 USE_LLM: bool = True
+
+# Loaded pipelines keyed by index_dir, so each index is only loaded once
+_pipelines: Dict[str, QueryPipeline] = {}
+_pipelines_lock = threading.Lock()
+
+# LRU cache of finished responses keyed by (index_dir, normalized query, k)
+RESPONSE_CACHE_SIZE = int(os.getenv("RESPONSE_CACHE_SIZE", "128"))
+_response_cache: "OrderedDict[Tuple[str, str, int], Dict[str, Any]]" = OrderedDict()
+_response_cache_lock = threading.Lock()
+
+
+def _load_pipeline(index_dir: str) -> QueryPipeline:
+    return load_rag_system(
+        index_dir=index_dir,
+        product_code=PRODUCT_CODE,
+        use_llm=USE_LLM,
+        llm_model=os.getenv("LLM_MODEL", "claude-3-haiku-20240307")
+    )
+
+
+def get_pipeline(index_dir: Optional[str]) -> QueryPipeline:
+    """Return the pipeline for index_dir, loading and caching it on first use."""
+    if not index_dir or index_dir == INDEX_DIR:
+        return pipeline
+    with _pipelines_lock:
+        if index_dir not in _pipelines:
+            loaded = _load_pipeline(index_dir)
+            loaded.warm_up()
+            _pipelines[index_dir] = loaded
+        return _pipelines[index_dir]
+
+
+def _cache_key(index_dir: str, query: str, k: int) -> Tuple[str, str, int]:
+    return (index_dir, " ".join(query.lower().split()), k)
+
+
+def _cache_get(key: Tuple[str, str, int]) -> Optional[Dict[str, Any]]:
+    with _response_cache_lock:
+        cached = _response_cache.get(key)
+        if cached is not None:
+            _response_cache.move_to_end(key)
+        return cached
+
+
+def _cache_put(key: Tuple[str, str, int], value: Dict[str, Any]):
+    if RESPONSE_CACHE_SIZE <= 0:
+        return
+    with _response_cache_lock:
+        _response_cache[key] = value
+        _response_cache.move_to_end(key)
+        while len(_response_cache) > RESPONSE_CACHE_SIZE:
+            _response_cache.popitem(last=False)
 
 
 @asynccontextmanager
@@ -60,12 +117,9 @@ async def lifespan(app: FastAPI):
     
     try:
         print(f"Loading RAG system from {INDEX_DIR}...")
-        pipeline = load_rag_system(
-            index_dir=INDEX_DIR,
-            product_code=PRODUCT_CODE,
-            use_llm=USE_LLM,
-            llm_model=os.getenv("LLM_MODEL", "claude-3-haiku-20240307")
-        )
+        pipeline = _load_pipeline(INDEX_DIR)
+        _pipelines[INDEX_DIR] = pipeline
+        pipeline.warm_up()
         print("RAG system loaded successfully!")
     except Exception as e:
         print(f"Error loading RAG system: {e}")
@@ -159,8 +213,41 @@ async def health():
     )
 
 
+def _format_references(references: List[Dict[str, Any]]) -> List[Reference]:
+    return [
+        Reference(
+            display_title=ref_dict.get('display_title'),
+            file_name=ref_dict.get('file_name'),
+            k_number=ref_dict.get('k_number'),
+            page_num=ref_dict.get('page_num'),
+            para_index=ref_dict.get('para_index'),
+            pdf_link=ref_dict.get('pdf_link')
+        )
+        for ref_dict in references
+    ]
+
+
+def _resolve_pipeline(request: QueryRequest) -> Tuple[str, QueryPipeline]:
+    """Return (index_dir, pipeline) for a request, raising HTTPException on failure."""
+    if pipeline is None:
+        raise HTTPException(
+            status_code=503,
+            detail="RAG system not initialized. Please check server logs."
+        )
+    
+    index_dir = request.index_dir if request.index_dir else INDEX_DIR
+    try:
+        return index_dir, get_pipeline(index_dir)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load index {index_dir}: {str(e)}"
+        )
+
+
+# Plain `def` so FastAPI runs the blocking RAG/LLM work in its threadpool instead of the event loop
 @app.post("/query", response_model=QueryResponse)
-async def query_documents(request: QueryRequest):
+def query_documents(request: QueryRequest):
     """
     Query the RAG system with a natural language question.
     
@@ -170,33 +257,12 @@ async def query_documents(request: QueryRequest):
     Returns:
         Query response with answer and references
     """
-    if pipeline is None:
-        raise HTTPException(
-            status_code=503,
-            detail="RAG system not initialized. Please check server logs."
-        )
+    index_dir, query_pipeline = _resolve_pipeline(request)
     
-    # Determine which index to use
-    index_dir = request.index_dir if request.index_dir else INDEX_DIR
-    
-    # Check if we need to load a different index
-    if request.index_dir and request.index_dir != INDEX_DIR:
-        try:
-            # Load the requested index temporarily
-            temp_pipeline = load_rag_system(
-                index_dir=index_dir,
-                product_code=PRODUCT_CODE,
-                use_llm=USE_LLM,
-                llm_model=os.getenv("LLM_MODEL", "claude-3-haiku-20240307")
-            )
-            query_pipeline = temp_pipeline
-        except Exception as e:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to load index {index_dir}: {str(e)}"
-            )
-    else:
-        query_pipeline = pipeline
+    key = _cache_key(index_dir, request.query, request.k)
+    cached = _cache_get(key)
+    if cached is not None:
+        return QueryResponse(**{**cached, 'metadata': {**cached['metadata'], 'cache_hit': True}})
     
     try:
         # Process the query
@@ -206,34 +272,135 @@ async def query_documents(request: QueryRequest):
             min_similarity=0.0
         )
         
-        # Format references
-        formatted_refs = []
-        for ref_dict in result.get('references', []):
-            formatted_refs.append(Reference(
-                display_title=ref_dict.get('display_title'),
-                file_name=ref_dict.get('file_name'),
-                k_number=ref_dict.get('k_number'),
-                page_num=ref_dict.get('page_num'),
-                para_index=ref_dict.get('para_index'),
-                pdf_link=ref_dict.get('pdf_link')
-            ))
-        
         # Build response
         response = QueryResponse(
             query=result['query'],
             response=result.get('response', result.get('summary', '')),
             refined_summary=result.get('refined_summary'),
-            references=formatted_refs,
+            references=_format_references(result.get('references', [])),
             metadata=result.get('metadata', {})
         )
-        
-        return response
-        
     except Exception as e:
         raise HTTPException(
             status_code=500,
             detail=f"Error processing query: {str(e)}"
         )
+    
+    if result.get('references'):
+        _cache_put(key, response.model_dump())
+    return response
+
+
+def _sse(event: str, data: Dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+def _stream_query_events(request: QueryRequest, index_dir: str, query_pipeline: QueryPipeline) -> Iterator[str]:
+    """
+    Server-Sent Events for one query:
+    references -> interleaved response/refined text deltas -> done (with metadata).
+    """
+    key = _cache_key(index_dir, request.query, request.k)
+    cached = _cache_get(key)
+    if cached is not None:
+        yield _sse("references", {"references": cached['references']})
+        yield _sse("response", {"text": cached['response']})
+        if cached.get('refined_summary'):
+            yield _sse("refined", {"text": cached['refined_summary']})
+        yield _sse("done", {"metadata": {**cached['metadata'], 'cache_hit': True}})
+        return
+    
+    timings: Dict[str, float] = {}
+    total_start = time.perf_counter()
+    try:
+        retrieval = query_pipeline.retrieve_only(request.query, k=request.k)
+    except Exception as e:
+        yield _sse("error", {"detail": f"Error processing query: {str(e)}"})
+        return
+    timings['retrieval'] = round((time.perf_counter() - total_start) * 1000, 1)
+    
+    retrieved = retrieval['retrieved_chunks']
+    references = [ref.model_dump() for ref in _format_references(
+        format_multiple_references(retrieved, format_type="dict")
+    )]
+    yield _sse("references", {"references": references})
+    
+    metadata: Dict[str, Any] = {
+        'num_retrieved': len(retrieved),
+        'k': request.k,
+        'method': 'custom_pipeline_stream',
+        'similarity_scores': [chunk.get('similarity_score', 0.0) for chunk in retrieved],
+        'queries_used': retrieval['queries_used'],
+        'sections_matched': retrieval['sections_used'],
+        'timings_ms': timings
+    }
+    
+    if not retrieved:
+        yield _sse("response", {"text": "No relevant documents found for your query."})
+        timings['total'] = round((time.perf_counter() - total_start) * 1000, 1)
+        yield _sse("done", {"metadata": metadata})
+        return
+    
+    # Run both LLM streams in background threads and interleave their deltas
+    events: "queue.Queue[Tuple[str, Optional[str]]]" = queue.Queue()
+    producers = {
+        'response': lambda: query_pipeline.stream_answer(request.query, retrieval),
+        'refined': lambda: query_pipeline.stream_refined(request.query, retrieval),
+    }
+    
+    def produce(name: str, make_stream):
+        start = time.perf_counter()
+        try:
+            for text in make_stream():
+                if f'{name}_first_token' not in timings:
+                    timings[f'{name}_first_token'] = round((time.perf_counter() - start) * 1000, 1)
+                events.put((name, text))
+        except Exception as e:
+            print(f"Error streaming {name}: {e}")
+        finally:
+            timings[f'llm_{name}'] = round((time.perf_counter() - start) * 1000, 1)
+            events.put((name, None))
+    
+    for name, make_stream in producers.items():
+        threading.Thread(target=produce, args=(name, make_stream), daemon=True).start()
+    
+    collected = {name: [] for name in producers}
+    remaining = len(producers)
+    while remaining:
+        name, text = events.get()
+        if text is None:
+            remaining -= 1
+            continue
+        collected[name].append(text)
+        yield _sse(name, {"text": text})
+    
+    timings['total'] = round((time.perf_counter() - total_start) * 1000, 1)
+    
+    response_text = "".join(collected['response'])
+    if response_text:
+        _cache_put(key, {
+            'query': request.query,
+            'response': response_text,
+            'refined_summary': "".join(collected['refined']) or None,
+            'references': references,
+            'metadata': metadata
+        })
+    yield _sse("done", {"metadata": metadata})
+
+
+@app.post("/query/stream")
+def query_documents_stream(request: QueryRequest):
+    """
+    Stream a query answer as Server-Sent Events.
+    
+    Events: `references`, `response` (text delta), `refined` (text delta), `done` (metadata), `error`.
+    """
+    index_dir, query_pipeline = _resolve_pipeline(request)
+    return StreamingResponse(
+        _stream_query_events(request, index_dir, query_pipeline),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    )
 
 
 @app.get("/api/info")
