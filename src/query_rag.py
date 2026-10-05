@@ -21,7 +21,7 @@ except ImportError:
 from embeddings import EmbeddingGenerator
 from vector_store import VectorStore
 from query_pipeline import QueryPipeline
-from llm_integration import DEFAULT_LLM_MODEL, LLMGenerator, SimpleLLMGenerator
+from llm_integration import DEFAULT_LLM_MODEL, LLMGenerator, SimpleLLMGenerator, strip_response_prefix
 from reference_formatter import format_reference_string, format_reference_markdown
 
 
@@ -119,12 +119,7 @@ def interactive_query(pipeline: QueryPipeline):
         result = pipeline.process_query(query, k=5)
         
         # Extract and display summary
-        response_text = result['response']
-        
-        # Check if response already starts with SUMMARY:
-        if not response_text.strip().startswith("SUMMARY:"):
-            # Ensure it starts with SUMMARY:
-            response_text = "SUMMARY:\n" + response_text
+        response_text = strip_response_prefix(result['response'])
         
         print("\n" + "-" * 80)
         print(response_text)
@@ -141,11 +136,7 @@ def interactive_query(pipeline: QueryPipeline):
         # Show refined summary after references if available
         if result.get('refined_summary'):
             print("\n" + "=" * 80)
-            refined_text = result['refined_summary']
-            # Ensure it starts with REFINED SUMMARY: if not already
-            if not refined_text.strip().startswith("REFINED SUMMARY"):
-                refined_text = "REFINED SUMMARY:\n" + refined_text
-            print(refined_text)
+            print(strip_response_prefix(result['refined_summary']))
             print("=" * 80)
         
         # Show query enhancement info if available
@@ -183,12 +174,7 @@ if __name__ == "__main__":
         print("\nQuery:", result['query'])
         
         # Extract and display summary
-        response_text = result['response']
-        
-        # Check if response already starts with SUMMARY:
-        if not response_text.strip().startswith("SUMMARY:"):
-            # Ensure it starts with SUMMARY:
-            response_text = "SUMMARY:\n" + response_text
+        response_text = strip_response_prefix(result['response'])
         
         print("\n" + "-" * 80)
         print(response_text)
@@ -205,11 +191,7 @@ if __name__ == "__main__":
         # Show refined summary after references if available
         if result.get('refined_summary'):
             print("\n" + "=" * 80)
-            refined_text = result['refined_summary']
-            # Ensure it starts with REFINED SUMMARY: if not already
-            if not refined_text.strip().startswith("REFINED SUMMARY"):
-                refined_text = "REFINED SUMMARY:\n" + refined_text
-            print(refined_text)
+            print(strip_response_prefix(result['refined_summary']))
             print("=" * 80)
         
         # Show query enhancement info if available

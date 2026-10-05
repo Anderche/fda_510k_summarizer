@@ -22,7 +22,7 @@ from typing import Callable, Dict, Iterator, List, Optional, Any, Set, Tuple
 from embeddings import EmbeddingGenerator
 from vector_store import VectorStore
 from rag_retrieval import RAGRetriever
-from llm_integration import GUIDANCE_MAX_TOKENS, LLMGenerator, RESPONSE_MAX_TOKENS, SimpleLLMGenerator
+from llm_integration import GUIDANCE_MAX_TOKENS, LLMGenerator, RESPONSE_MAX_TOKENS, SimpleLLMGenerator, strip_response_prefix
 from reference_formatter import format_multiple_references
 from query_enhancement import QueryEnhancer
 from ner_tfidf_extractor import NERTFIDFExtractor
@@ -122,7 +122,7 @@ Context:
 
 Question: {question}
 
-Follow any formatting requested in the question. If the question asks to list, itemize, enumerate, or give steps, answer with a Markdown list ("- item" or "1. item"), one item per line. Do not collapse those items into a paragraph. Otherwise write a concise, focused answer based on the context. Focus on regulatory requirements, standards, and guidance specific to artificial intelligence in medical devices.
+Follow any formatting requested in the question. If the question asks to list, itemize, enumerate, or give steps, answer with a Markdown list ("- item" or "1. item"), one item per line. Do not collapse those items into a paragraph. Otherwise write a complete answer from the provided documents; do not omit relevant requirements. Focus on regulatory requirements, standards, and guidance specific to artificial intelligence in medical devices. Cite sources inline with [n] matching the numbered context documents. Do not start with SUMMARY: or restate the question.
 
 Answer:"""
             else:
@@ -135,7 +135,7 @@ Context:
 
 Question: {question}
 
-Follow any formatting requested in the question. If the question asks to list, itemize, enumerate, or give steps, answer with a Markdown list ("- item" or "1. item"), one item per line. Otherwise provide a clear and concise answer based on the context. Include relevant details from the documents.
+Follow any formatting requested in the question. If the question asks to list, itemize, enumerate, or give steps, answer with a Markdown list ("- item" or "1. item"), one item per line. Otherwise provide a complete answer based on the context; do not omit relevant details from the documents. Cite sources inline with [n]. Do not start with SUMMARY: or restate the question.
 
 Answer:"""
             
@@ -300,16 +300,14 @@ Answer:"""
             )
             timings['total'] = round((time.perf_counter() - total_start) * 1000, 1)
             
-            # Ensure response starts with SUMMARY:
-            if not response_text.strip().startswith("SUMMARY:"):
-                response_text = "SUMMARY:\n" + response_text
+            response_text = strip_response_prefix(response_text)
             
             return {
                 'query': query,
                 'retrieved_chunks': retrieved_chunks,
                 'references': references,
                 'response': response_text,
-                'refined_summary': refined_summary,
+                'refined_summary': strip_response_prefix(refined_summary) if refined_summary else None,
                 'metadata': {
                     'num_retrieved': len(retrieved_chunks),
                     'k': k,
@@ -484,8 +482,8 @@ Answer:"""
             'query': query,
             'retrieved_chunks': retrieved,
             'references': references,
-            'response': response,
-            'refined_summary': refined_summary,
+            'response': strip_response_prefix(response),
+            'refined_summary': strip_response_prefix(refined_summary) if refined_summary else None,
             'metadata': {
                 'num_retrieved': len(retrieved),
                 'k': k,
