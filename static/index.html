@@ -723,15 +723,6 @@
             overflow-wrap: anywhere;
         }
 
-        .ref-card__text {
-            margin-top: var(--space-1);
-            font-size: var(--text-sm);
-            line-height: 1.55;
-            color: var(--color-text);
-            white-space: pre-wrap;
-            overflow-wrap: anywhere;
-        }
-
         .ref-card__footer {
             display: flex;
             align-items: center;
@@ -855,6 +846,10 @@
 
             .section__body {
                 padding: var(--space-5);
+            }
+
+            .ref-grid {
+                grid-template-columns: repeat(2, 1fr);
             }
         }
 
@@ -1231,29 +1226,30 @@
                 return;
             }
 
-            const cards = refs.map((ref, i) => {
-                const slot = i + 1;
-                const title = documentKey(ref, i);
-                const status = guidanceStatus(ref.guidance_type);
+            const cards = groupReferences(refs).map((group) => {
+                const status = guidanceStatus(group.guidance_type);
                 const badge = status
                     ? `<span class="badge badge--${status.toLowerCase()}">${status}</span>`
                     : '';
-                const href = ref.pdf_link ? safeUrl(ref.pdf_link) : null;
-                const pageLabel = ref.page_num ? `Page ${escapeHtml(ref.page_num)}` : 'Source';
-                const pageChip = href
-                    ? `<a class="ref-page" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${pageLabel}</a>`
-                    : `<span class="badge">${pageLabel}</span>`;
-                const link = href
-                    ? `<a class="ref-card__link" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">View document<svg aria-hidden="true"><use href="#icon-external"/></svg></a>`
+                const pages = group.pages.map((page) => {
+                    const anchors = page.slots
+                        .map((slot) => `<span class="ref-anchor" id="ref-${slot}"></span>`)
+                        .join('');
+                    const label = page.page_num ? `Page ${escapeHtml(page.page_num)}` : 'Source';
+                    const href = page.href ? safeUrl(page.href) : null;
+                    const chip = href
+                        ? `<a class="ref-page" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${label}</a>`
+                        : `<span class="badge">${label}</span>`;
+                    return `${anchors}${chip}`;
+                }).join('');
+                const docHref = group.pdf_link ? safeUrl(group.pdf_link) : null;
+                const link = docHref
+                    ? `<a class="ref-card__link" href="${escapeHtml(docHref)}" target="_blank" rel="noopener noreferrer">View document<svg aria-hidden="true"><use href="#icon-external"/></svg></a>`
                     : '';
-                const excerpt = ref.text
-                    ? `<div class="ref-card__text">${escapeHtml(ref.text)}</div>`
-                    : '<p class="muted">No retrieved text for this source.</p>';
                 return `
-                    <article class="ref-card ref-anchor" id="ref-${slot}">
-                        <h3 class="ref-card__title"><a class="cite" href="#ref-${slot}">[${slot}]</a> ${escapeHtml(title)}</h3>
-                        <div class="ref-pages">${pageChip}</div>
-                        ${excerpt}
+                    <article class="ref-card">
+                        <h3 class="ref-card__title">${escapeHtml(group.title)}</h3>
+                        <div class="ref-pages">${pages}</div>
                         <div class="ref-card__footer">${badge}${link}</div>
                     </article>`;
             });

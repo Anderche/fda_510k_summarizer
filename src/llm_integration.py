@@ -425,16 +425,10 @@ Provide a focused response that directly answers the query based on the FDA AI g
         if not context_chunks:
             return "No relevant documents found to answer your question."
         
-        # Extract key information from top 3 chunks
         summary_parts = ["Based on the retrieved FDA documents:"]
         
-        for i, chunk in enumerate(context_chunks[:3], 1):
+        for i, chunk in enumerate(context_chunks, 1):
             chunk_text = chunk.get('text', '').strip()
-            # Take first 200 chars or first sentence
-            if len(chunk_text) > 200:
-                # Try to break at sentence
-                first_sentence = chunk_text.split('.')[0] if '.' in chunk_text else chunk_text[:200]
-                chunk_text = first_sentence[:200] + "..."
             if chunk_text:
                 summary_parts.append(f"\n[{i}] {chunk_text}")
         
@@ -851,17 +845,11 @@ class SimpleLLMGenerator:
         if source_type == 'corpus_ai_guidances':
             response_parts = [f"Based on FDA AI guidance documents:"]
             
-            # Extract key information from top 3 chunks
-            for i, chunk in enumerate(context_chunks[:3], 1):
+            for i, chunk in enumerate(context_chunks, 1):
                 chunk_text = chunk.get('text', '').strip()
                 header = format_source_header(i, chunk)
-                # Limit chunk text to 200 chars for summary
-                if len(chunk_text) > 200:
-                    # Try to break at sentence
-                    first_sentence = chunk_text.split('.')[0] if '.' in chunk_text else chunk_text[:200]
-                    chunk_text = first_sentence[:200] + "..."
                 if chunk_text:
-                    response_parts.append(f"\n{header} {chunk_text}")
+                    response_parts.append(f"\n{header}\n{chunk_text}")
             
             return "\n".join(response_parts)
         
@@ -875,16 +863,10 @@ class SimpleLLMGenerator:
         if context_sections:
             response_parts.append(f"\nRelevant sections: {context_sections}")
         
-        # Extract key information from top 3 chunks
-        for i, chunk in enumerate(context_chunks[:3], 1):
+        for i, chunk in enumerate(context_chunks, 1):
             chunk_text = chunk.get('text', '').strip()
-            # Limit chunk text to 200 chars for summary
-            if len(chunk_text) > 200:
-                # Try to break at sentence
-                first_sentence = chunk_text.split('.')[0] if '.' in chunk_text else chunk_text[:200]
-                chunk_text = first_sentence[:200] + "..."
             if chunk_text:
-                response_parts.append(f"\n{chunk_text}")
+                response_parts.append(f"\n[{i}] {chunk_text}")
         
         return "\n".join(response_parts)
     
