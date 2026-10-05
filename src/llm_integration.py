@@ -23,9 +23,10 @@ FDA_API_TIMEOUT_SECONDS = 3
 DEFAULT_LLM_MODEL = "claude-haiku-4-5"
 GUIDANCE_MAX_TOKENS = 8192  # full guidance answers, including lists
 RESPONSE_MAX_TOKENS = 8192  # full 510(k) answers plus citations
-REFINED_MAX_TOKENS = 1000  # refined summary of 200-300 words
+REFINED_MAX_TOKENS = 1000  # refined summary of about 250 words
 REFINED_MAX_CHUNKS = 8
-REFINED_MAX_CHUNK_CHARS = 600
+REFINED_MAX_CHUNK_CHARS = 300
+SUMMARY_TARGET_WORDS = 250
 REFINED_MAX_SUB_SUMMARIES = 20
 
 _LIST_FORMAT_RE = re.compile(
@@ -97,6 +98,15 @@ def citation_instructions() -> str:
         "- Place each citation immediately after the claim it supports.\n"
         "- Do not start with SUMMARY: or restate the user query.\n"
         "- Write a complete answer from the provided documents; do not omit relevant requirements."
+    )
+
+
+def summary_length_instructions() -> str:
+    return (
+        "LENGTH:\n"
+        f"- Write a basic summary of about {SUMMARY_TARGET_WORDS} words that synthesizes the documents "
+        "into coherent natural language.\n"
+        f"- Do not exceed {SUMMARY_TARGET_WORDS + 50} words."
     )
 
 
@@ -384,6 +394,7 @@ RELEVANT DOCUMENTS:
 
 INSTRUCTIONS:
 Provide a focused response that directly answers the query based on the FDA AI guidance documents provided. Focus on regulatory requirements, standards, and guidance specific to artificial intelligence in medical devices. Use metadata from documents (file names, sections) but do not reference product codes.
+{summary_length_instructions()}
 {response_format_instructions(query)}
 {citation_instructions()}"""
 
@@ -806,7 +817,7 @@ Comprehensive Context from {context_max_section} Section:
 {refined_context}
 
 INSTRUCTIONS:
-Generate a detailed, refined summary (200-300 words) that:
+Generate a detailed, refined summary of about {SUMMARY_TARGET_WORDS} words that:
 1. Directly and comprehensively answers the user's query
 2. Synthesizes information from ALL available chunks in the '{context_max_section}' section
 3. Incorporates the relevant keywords naturally throughout the response

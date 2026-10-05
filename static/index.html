@@ -604,6 +604,18 @@
             scroll-margin-top: 24px;
         }
 
+        .ref-preview {
+            margin: 0;
+            color: var(--color-text-muted);
+            font-size: var(--text-sm);
+            line-height: 1.5;
+        }
+
+        .ref-preview__slot {
+            color: var(--color-accent);
+            font-weight: 500;
+        }
+
         .badge--draft {
             background: #fff7ed;
             color: #c2410c;
@@ -1057,6 +1069,8 @@
             return /draft/i.test(type) ? 'Draft' : 'Final';
         }
 
+        const REFERENCE_PREVIEW_CHARS = 300;
+
         function documentKey(ref, idx) {
             return ref.display_title || ref.file_name || ref.k_number || `Reference ${idx + 1}`;
         }
@@ -1073,10 +1087,14 @@
                         title: key,
                         guidance_type: ref.guidance_type,
                         pdf_link: ref.pdf_link ? ref.pdf_link.split('#')[0] : null,
-                        pages: []
+                        pages: [],
+                        previews: []
                     });
                 }
                 const group = groups[index.get(key)];
+                if (ref.text) {
+                    group.previews.push({ slot, text: ref.text });
+                }
                 let page = group.pages.find((entry) => entry.page_num === ref.page_num);
                 if (!page) {
                     page = { page_num: ref.page_num, slots: [], href: ref.pdf_link || group.pdf_link };
@@ -1246,10 +1264,15 @@
                 const link = docHref
                     ? `<a class="ref-card__link" href="${escapeHtml(docHref)}" target="_blank" rel="noopener noreferrer">View document<svg aria-hidden="true"><use href="#icon-external"/></svg></a>`
                     : '';
+                const previews = group.previews.map((preview) => {
+                    const ellipsis = preview.text.length >= REFERENCE_PREVIEW_CHARS ? '…' : '';
+                    return `<p class="ref-preview"><span class="ref-preview__slot">[${preview.slot}]</span> ${escapeHtml(preview.text)}${ellipsis}</p>`;
+                }).join('');
                 return `
                     <article class="ref-card">
                         <h3 class="ref-card__title">${escapeHtml(group.title)}</h3>
                         <div class="ref-pages">${pages}</div>
+                        ${previews}
                         <div class="ref-card__footer">${badge}${link}</div>
                     </article>`;
             });

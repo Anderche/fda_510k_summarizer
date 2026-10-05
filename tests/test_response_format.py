@@ -50,6 +50,14 @@ def test_guidance_prompt_includes_list_format_rule():
     assert "[1] guidance.pdf, p. 12" in user_prompt
     assert "Cite sources inline with [n]" in user_prompt
     assert "Start the answer with SUMMARY:" not in user_prompt
+    assert "about 250 words" in user_prompt
+
+
+def test_reference_text_is_trimmed_to_300_chars():
+    from reference_formatter import format_reference
+
+    ref = format_reference({"text": "x" * 500, "metadata": {"file_name": "doc.pdf", "page_num": 1}})
+    assert ref["text"] == "x" * 300
 
 
 def test_guidance_prompt_does_not_force_summary_label():

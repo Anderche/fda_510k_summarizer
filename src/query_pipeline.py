@@ -22,7 +22,7 @@ from typing import Callable, Dict, Iterator, List, Optional, Any, Set, Tuple
 from embeddings import EmbeddingGenerator
 from vector_store import VectorStore
 from rag_retrieval import RAGRetriever
-from llm_integration import GUIDANCE_MAX_TOKENS, LLMGenerator, RESPONSE_MAX_TOKENS, SimpleLLMGenerator, strip_response_prefix
+from llm_integration import GUIDANCE_MAX_TOKENS, LLMGenerator, RESPONSE_MAX_TOKENS, SUMMARY_TARGET_WORDS, SimpleLLMGenerator, strip_response_prefix
 from reference_formatter import format_multiple_references
 from query_enhancement import QueryEnhancer
 from ner_tfidf_extractor import NERTFIDFExtractor
@@ -121,6 +121,8 @@ Context:
 {context}
 
 Question: {question}
+
+Write a basic summary of about """ + str(SUMMARY_TARGET_WORDS) + """ words that synthesizes the context into coherent natural language. Do not exceed """ + str(SUMMARY_TARGET_WORDS + 50) + """ words.
 
 Follow any formatting requested in the question. If the question asks to list, itemize, enumerate, or give steps, answer with a Markdown list ("- item" or "1. item"), one item per line. Do not collapse those items into a paragraph. Otherwise write a complete answer from the provided documents; do not omit relevant requirements. Focus on regulatory requirements, standards, and guidance specific to artificial intelligence in medical devices. Cite sources inline with [n] matching the numbered context documents. Do not start with SUMMARY: or restate the question.
 

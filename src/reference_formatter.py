@@ -7,6 +7,8 @@ Formats references with file, page, paragraph, and PDF links.
 import os
 from typing import Dict, Any, Optional, List
 
+REFERENCE_PREVIEW_CHARS = 300
+
 # Mapping of FDA guidance filenames to proper titles and links
 GUIDANCE_MAPPING = {
     'guidance-ai-enabled-device-software-functions.pdf': {
@@ -142,7 +144,8 @@ def format_reference(chunk_data: Dict[str, Any]) -> Dict[str, Any]:
         'pdf_link': pdf_link,
         'file_path': file_path,
         'display_title': display_title,
-        'guidance_type': guidance_info.get('type') if guidance_info else None
+        'guidance_type': guidance_info.get('type') if guidance_info else None,
+        'text': (chunk_data.get('text') or '')[:REFERENCE_PREVIEW_CHARS],
     }
 
 
