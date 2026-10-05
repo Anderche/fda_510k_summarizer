@@ -21,8 +21,8 @@ except ImportError:
 
 FDA_API_TIMEOUT_SECONDS = 3
 DEFAULT_LLM_MODEL = "claude-haiku-4-5"
-GUIDANCE_MAX_TOKENS = 4096  # full guidance answers, including lists
-RESPONSE_MAX_TOKENS = 4096  # full 510(k) answers plus citations
+GUIDANCE_MAX_TOKENS = 8192  # full guidance answers, including lists
+RESPONSE_MAX_TOKENS = 8192  # full 510(k) answers plus citations
 REFINED_MAX_TOKENS = 1000  # refined summary of 200-300 words
 REFINED_MAX_CHUNKS = 8
 REFINED_MAX_CHUNK_CHARS = 600
@@ -80,6 +80,14 @@ def format_source_header(index: int, chunk: Dict[str, Any]) -> str:
     title = (info or {}).get('title') or metadata.get('k_number') or file_name
     page_bit = f", p. {page_num}" if page_num else ""
     return f"[{index}] {title}{page_bit}"
+
+
+def format_context_from_chunks(context_chunks: List[Dict[str, Any]]) -> str:
+    """Join retrieved chunks in full, numbered to match inline [n] citations."""
+    return "\n\n".join(
+        f"{format_source_header(i, chunk)}:\n{chunk.get('text', '')}"
+        for i, chunk in enumerate(context_chunks, 1)
+    )
 
 
 def citation_instructions() -> str:
@@ -365,28 +373,7 @@ Provide a concise summary (2-3 sentences) highlighting the most important inform
     
     def _build_guidance_prompts(self, query: str, context_chunks: List[Dict[str, Any]]) -> Tuple[str, str]:
         """Build (system_prompt, user_prompt) for FDA guidance documents."""
-        # Build context from chunks with references
-        context_parts = []
-        total_length = 0
-        max_context_length = 50000  # Smaller context for simplified prompt
-        
-        for i, chunk in enumerate(context_chunks[:5], 1):  # Limit to top 5 chunks
-            chunk_text = chunk.get('text', '')
-            header = format_source_header(i, chunk)
-            chunk_entry = f"{header}:\n{chunk_text}"
-            
-            # Check if adding this chunk would exceed context limit
-            if total_length + len(chunk_entry) > max_context_length:
-                remaining = max_context_length - total_length - 500
-                chunk_entry = f"{header}:\n{chunk_text[:remaining]}..."
-            
-            context_parts.append(chunk_entry)
-            total_length += len(chunk_entry)
-            
-            if total_length >= max_context_length:
-                break
-        
-        context = "\n\n".join(context_parts)
+        context = format_context_from_chunks(context_chunks)
         
         system_prompt = "You are a regulatory affairs consultant whose task is to research the AI regulations, standards, and guidances."
         
@@ -549,30 +536,7 @@ Provide a focused response that directly answers the query based on the FDA AI g
                                 query_ner: Optional[str] = None, query_tfidf: Optional[str] = None,
                                 context_sections: Optional[str] = None) -> Tuple[str, str]:
         """Build (system_prompt, user_prompt) for 510(k) documents."""
-        # Build context from chunks with references
-        context_parts = []
-        total_length = 0
-        max_context_length = 200000  # Claude 3.5 Sonnet has 200k context
-        
-        for i, chunk in enumerate(context_chunks[:10], 1):  # Limit to top 10 chunks
-            chunk_text = chunk.get('text', '')
-            header = format_source_header(i, chunk)
-            
-            chunk_entry = f"{header}:\n{chunk_text}"
-            
-            # Check if adding this chunk would exceed context limit
-            if total_length + len(chunk_entry) > max_context_length:
-                # Truncate this chunk to fit
-                remaining = max_context_length - total_length - 500  # Safety margin
-                chunk_entry = f"{header}:\n{chunk_text[:remaining]}..."
-            
-            context_parts.append(chunk_entry)
-            total_length += len(chunk_entry)
-            
-            if total_length >= max_context_length:
-                break
-        
-        context = "\n\n".join(context_parts)
+        context = format_context_from_chunks(context_chunks)
         
         # Extract and verify product codes - PRIORITIZE provided product_code parameter
         verified_device_info = self._find_verified_device_info(query, product_code)

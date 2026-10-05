@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from reference_formatter import (  # noqa: E402
+    format_reference,
     guidance_status,
     group_references,
     pdf_page_url,
@@ -66,3 +67,18 @@ def test_group_references_merges_pages_and_keeps_slots():
     assert groups[1]["pages"][0]["slots"] == [2]
     assert guidance_status(groups[0]["guidance_type"]) == "Draft"
     assert guidance_status(groups[1]["guidance_type"]) == "Final"
+
+
+def test_format_reference_includes_full_chunk_text():
+    chunk = {
+        "text": "Full retrieved vector text without cutoff.",
+        "metadata": {
+            "file_name": "guidance-ai-enabled-device-software-functions.pdf",
+            "page_num": 12,
+            "para_index": 3,
+        },
+    }
+    ref = format_reference(chunk)
+    assert ref["text"] == "Full retrieved vector text without cutoff."
+    assert ref["page_num"] == 12
+    assert ref["display_title"].startswith("Artificial Intelligence-Enabled")
