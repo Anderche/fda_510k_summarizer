@@ -10,7 +10,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from typing import Callable, Iterator, List, Dict, Optional, Any, Tuple
-from reference_formatter import format_reference_string
+from reference_formatter import get_guidance_info
 
 try:
     import requests
@@ -21,8 +21,8 @@ except ImportError:
 
 FDA_API_TIMEOUT_SECONDS = 3
 DEFAULT_LLM_MODEL = "claude-haiku-4-5"
-GUIDANCE_MAX_TOKENS = 600  # ceiling so list/itemize answers can finish
-RESPONSE_MAX_TOKENS = 1500  # summary plus citations
+GUIDANCE_MAX_TOKENS = 4096  # full guidance answers, including lists
+RESPONSE_MAX_TOKENS = 4096  # full 510(k) answers plus citations
 REFINED_MAX_TOKENS = 1000  # refined summary of 200-300 words
 REFINED_MAX_CHUNKS = 8
 REFINED_MAX_CHUNK_CHARS = 600
@@ -49,6 +49,49 @@ def query_requests_structured_format(query: str) -> bool:
     return bool(_LIST_FORMAT_RE.search(query or ""))
 
 
+_RESPONSE_PREFIX_RE = re.compile(r'^(?:REFINED\s+)?SUMMARY:\s*', re.IGNORECASE)
+
+
+def strip_response_prefix(text: str) -> str:
+    """Remove a leading SUMMARY: / REFINED SUMMARY: label if the model still emits one."""
+    if not text:
+        return ''
+    return _RESPONSE_PREFIX_RE.sub('', text.lstrip(), count=1).lstrip()
+
+
+def _leading_prefix_pending(text: str) -> bool:
+    """True while streamed text might still be a SUMMARY: prefix in progress."""
+    stripped = text.lstrip()
+    if not stripped:
+        return True
+    upper = stripped.upper()
+    for prefix in ('SUMMARY:', 'REFINED SUMMARY:'):
+        if prefix.startswith(upper) and len(upper) < len(prefix):
+            return True
+    return False
+
+
+def format_source_header(index: int, chunk: Dict[str, Any]) -> str:
+    """Numbered source label used in prompts, e.g. [1] Title, p. 12."""
+    metadata = chunk.get('metadata') or {}
+    file_name = metadata.get('file_name') or 'Unknown'
+    page_num = metadata.get('page_num')
+    info = get_guidance_info(file_name)
+    title = (info or {}).get('title') or metadata.get('k_number') or file_name
+    page_bit = f", p. {page_num}" if page_num else ""
+    return f"[{index}] {title}{page_bit}"
+
+
+def citation_instructions() -> str:
+    return (
+        "CITE:\n"
+        "- Cite sources inline with [n] matching the numbered documents above.\n"
+        "- Place each citation immediately after the claim it supports.\n"
+        "- Do not start with SUMMARY: or restate the user query.\n"
+        "- Write a complete answer from the provided documents; do not omit relevant requirements."
+    )
+
+
 def response_format_instructions(query: str) -> str:
     """Prompt text that makes the model follow the user's requested layout."""
     if query_requests_structured_format(query):
@@ -63,7 +106,8 @@ def response_format_instructions(query: str) -> str:
         "FORMAT:\n"
         "- Follow any structure requested in the User Query (lists, bullets, numbered items, steps).\n"
         "- If asked to list or itemize, use Markdown lists (\"- item\" or \"1. item\"), one item per line.\n"
-        "- If no format is requested, write a concise prose summary."
+        "- If no format is requested, write a complete answer from the provided documents; "
+        "do not omit relevant requirements."
     )
 
 _fda_session = requests.Session() if REQUESTS_AVAILABLE else None
@@ -290,38 +334,27 @@ Provide a concise summary (2-3 sentences) highlighting the most important inform
             yield from stream.text_stream
     
     def _stream_with_fallback(self, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float,
-                              fallback: Optional[Callable[[], Optional[str]]] = None,
-                              required_prefix: Optional[str] = None) -> Iterator[str]:
+                              fallback: Optional[Callable[[], Optional[str]]] = None) -> Iterator[str]:
         """
-        Stream a completion, optionally forcing it to start with required_prefix.
+        Stream a completion, stripping a leading SUMMARY: label if the model still emits one.
         If nothing was streamed (error or empty output), yield the fallback text instead.
         """
         emitted = False
         pending = ''
         
-        def with_prefix(text: str) -> str:
-            text = text.lstrip()
-            if required_prefix is None or text.startswith(required_prefix):
-                return text
-            return f"{required_prefix}\n{text}"
-        
         try:
             for text in self._stream_text(system_prompt, user_prompt, max_tokens, temperature):
                 if not emitted:
                     pending += text
-                    stripped = pending.lstrip()
-                    if not stripped:
+                    if _leading_prefix_pending(pending):
                         continue
-                    # Hold back output until we know whether the model wrote the prefix itself
-                    if required_prefix and len(stripped) < len(required_prefix) and required_prefix.startswith(stripped):
-                        continue
-                    text = with_prefix(pending)
+                    text = strip_response_prefix(pending)
                 if text:
                     emitted = True
                     yield text
             if not emitted and pending.strip():
                 emitted = True
-                yield with_prefix(pending)
+                yield strip_response_prefix(pending)
         except Exception as e:
             print(f"Error streaming response: {e}")
         
@@ -339,14 +372,13 @@ Provide a concise summary (2-3 sentences) highlighting the most important inform
         
         for i, chunk in enumerate(context_chunks[:5], 1):  # Limit to top 5 chunks
             chunk_text = chunk.get('text', '')
-            file_name = chunk.get('metadata', {}).get('file_name', 'Unknown')
-            
-            chunk_entry = f"Document {i} ({file_name}):\n{chunk_text}"
+            header = format_source_header(i, chunk)
+            chunk_entry = f"{header}:\n{chunk_text}"
             
             # Check if adding this chunk would exceed context limit
             if total_length + len(chunk_entry) > max_context_length:
                 remaining = max_context_length - total_length - 500
-                chunk_entry = f"Document {i} ({file_name}):\n{chunk_text[:remaining]}..."
+                chunk_entry = f"{header}:\n{chunk_text[:remaining]}..."
             
             context_parts.append(chunk_entry)
             total_length += len(chunk_entry)
@@ -365,7 +397,8 @@ RELEVANT DOCUMENTS:
 
 INSTRUCTIONS:
 Provide a focused response that directly answers the query based on the FDA AI guidance documents provided. Focus on regulatory requirements, standards, and guidance specific to artificial intelligence in medical devices. Use metadata from documents (file names, sections) but do not reference product codes.
-{response_format_instructions(query)}"""
+{response_format_instructions(query)}
+{citation_instructions()}"""
 
         return system_prompt, user_prompt
     
@@ -378,7 +411,7 @@ Provide a focused response that directly answers the query based on the FDA AI g
             context_chunks: List of retrieved chunk dictionaries with 'text' key
             
         Returns:
-            Generated response text (~80 words)
+            Generated response text
         """
         system_prompt, user_prompt = self._build_guidance_prompts(query, context_chunks)
         try:
@@ -389,10 +422,7 @@ Provide a focused response that directly answers the query based on the FDA AI g
         
         if not response_text:
             return self._generate_fallback_summary(query, context_chunks)
-        # Ensure it starts with SUMMARY:
-        if not response_text.startswith("SUMMARY:"):
-            response_text = "SUMMARY:\n" + response_text
-        return response_text
+        return strip_response_prefix(response_text)
     
     def _generate_fallback_summary(self, query: str, context_chunks: List[Dict[str, Any]]) -> str:
         """
@@ -406,11 +436,10 @@ Provide a focused response that directly answers the query based on the FDA AI g
             Fallback summary text
         """
         if not context_chunks:
-            return "SUMMARY:\nNo relevant documents found to answer your question."
+            return "No relevant documents found to answer your question."
         
         # Extract key information from top 3 chunks
-        summary_parts = []
-        summary_parts.append(f"Based on the retrieved FDA 510(k) documents regarding your question about {query.lower()}:")
+        summary_parts = ["Based on the retrieved FDA documents:"]
         
         for i, chunk in enumerate(context_chunks[:3], 1):
             chunk_text = chunk.get('text', '').strip()
@@ -420,14 +449,9 @@ Provide a focused response that directly answers the query based on the FDA AI g
                 first_sentence = chunk_text.split('.')[0] if '.' in chunk_text else chunk_text[:200]
                 chunk_text = first_sentence[:200] + "..."
             if chunk_text:
-                summary_parts.append(f"\n{chunk_text}")
+                summary_parts.append(f"\n[{i}] {chunk_text}")
         
-        summary = "\n".join(summary_parts)
-        # Ensure it starts with SUMMARY:
-        if not summary.startswith("SUMMARY:"):
-            summary = "SUMMARY:\n" + summary
-        
-        return summary
+        return "\n".join(summary_parts)
     
     def _extract_product_codes(self, query: str) -> List[str]:
         """
@@ -532,18 +556,15 @@ Provide a focused response that directly answers the query based on the FDA AI g
         
         for i, chunk in enumerate(context_chunks[:10], 1):  # Limit to top 10 chunks
             chunk_text = chunk.get('text', '')
-            k_number = chunk.get('metadata', {}).get('k_number', 'Unknown')
+            header = format_source_header(i, chunk)
             
-            # Format reference
-            ref_str = format_reference_string(chunk, include_link=False)
-            
-            chunk_entry = f"Document {i} ({ref_str}):\n{chunk_text}"
+            chunk_entry = f"{header}:\n{chunk_text}"
             
             # Check if adding this chunk would exceed context limit
             if total_length + len(chunk_entry) > max_context_length:
                 # Truncate this chunk to fit
                 remaining = max_context_length - total_length - 500  # Safety margin
-                chunk_entry = f"Document {i} ({ref_str}):\n{chunk_text[:remaining]}..."
+                chunk_entry = f"{header}:\n{chunk_text[:remaining]}..."
             
             context_parts.append(chunk_entry)
             total_length += len(chunk_entry)
@@ -605,8 +626,9 @@ Produce a response with the following structure:
    - Connect to related regulatory frameworks beyond strict 510(k) requirements
    - Offer practical guidance and best practices
 
-Start the answer with SUMMARY:
+Start the answer with the direct response; do not restate the query.
 {response_format_instructions(query)}
+{citation_instructions()}
 
 CRITICAL: If verified device information was provided above, you MUST reference the exact device name and medical specialty in your response. Do NOT substitute or infer different device types."""
 
@@ -644,7 +666,7 @@ CRITICAL: If verified device information was provided above, you MUST reference 
             # Generate a simple summary from top chunks as fallback
             return self._generate_fallback_summary(query, context_chunks)
         
-        return response_text or self._generate_fallback_summary(query, context_chunks)
+        return strip_response_prefix(response_text) or self._generate_fallback_summary(query, context_chunks)
     
     def stream_response(self, query: str, context_chunks: List[Dict[str, Any]], product_code: Optional[str] = None,
                         query_ner: Optional[str] = None, query_tfidf: Optional[str] = None,
@@ -656,7 +678,7 @@ CRITICAL: If verified device information was provided above, you MUST reference 
         if source_type == 'corpus_ai_guidances':
             system_prompt, user_prompt = self._build_guidance_prompts(query, context_chunks)
             yield from self._stream_with_fallback(system_prompt, user_prompt, GUIDANCE_MAX_TOKENS, 0.7,
-                                                  fallback=fallback, required_prefix="SUMMARY:")
+                                                  fallback=fallback)
             return
         
         system_prompt, user_prompt = self._build_response_prompts(
@@ -684,7 +706,7 @@ CRITICAL: If verified device information was provided above, you MUST reference 
         if prompts is None:
             return None
         try:
-            return self._complete(*prompts, REFINED_MAX_TOKENS, 0.6) or None
+            return strip_response_prefix(self._complete(*prompts, REFINED_MAX_TOKENS, 0.6)) or None
         except Exception as e:
             print(f"Error generating refined summary: {e}")
             return None
@@ -834,8 +856,9 @@ Generate a detailed, refined summary (200-300 words) that:
 5. References specific findings, requirements, or data points from the section content
 6. Maintains accuracy and cites relevant FDA regulatory context where appropriate
 
-Start the answer with REFINED SUMMARY:
-{response_format_instructions(query)}"""
+Start the answer with the direct response; do not restate the query.
+{response_format_instructions(query)}
+{citation_instructions()}"""
         
         return system_prompt, user_prompt
 
@@ -858,30 +881,28 @@ class SimpleLLMGenerator:
                          context_sections: Optional[str] = None, source_type: Optional[str] = None) -> str:
         """Generate a simple response based on context."""
         if not context_chunks:
-            return "SUMMARY:\nNo relevant documents found to answer your question."
+            return "No relevant documents found to answer your question."
         
         # Use simplified response for guidance documents
         if source_type == 'corpus_ai_guidances':
-            response_parts = ["SUMMARY:"]
-            response_parts.append(f"Based on FDA AI guidance documents, regarding your question '{query}':")
+            response_parts = [f"Based on FDA AI guidance documents:"]
             
             # Extract key information from top 3 chunks
             for i, chunk in enumerate(context_chunks[:3], 1):
                 chunk_text = chunk.get('text', '').strip()
-                file_name = chunk.get('metadata', {}).get('file_name', 'Unknown')
+                header = format_source_header(i, chunk)
                 # Limit chunk text to 200 chars for summary
                 if len(chunk_text) > 200:
                     # Try to break at sentence
                     first_sentence = chunk_text.split('.')[0] if '.' in chunk_text else chunk_text[:200]
                     chunk_text = first_sentence[:200] + "..."
                 if chunk_text:
-                    response_parts.append(f"\n[{file_name}] {chunk_text}")
+                    response_parts.append(f"\n{header} {chunk_text}")
             
             return "\n".join(response_parts)
         
         # Standard 510k response
-        response_parts = ["SUMMARY:"]
-        response_parts.append(f"Based on FDA CDRH 510(k) summaries for product code {product_code or 'the specified devices'}, regarding your question '{query}':")
+        response_parts = [f"Based on FDA CDRH 510(k) summaries for product code {product_code or 'the specified devices'}:"]
         
         if query_ner:
             response_parts.append(f"\nQuery entities: {query_ner}")

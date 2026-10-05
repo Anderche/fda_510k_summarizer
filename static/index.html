@@ -557,6 +557,63 @@
             transform: rotate(90deg);
         }
 
+        .answer__header {
+            display: flex;
+            align-items: center;
+            gap: var(--space-3);
+            min-height: 52px;
+            padding: var(--space-3) var(--space-4);
+        }
+
+        .cite {
+            font-size: 0.8em;
+            font-weight: 600;
+            text-decoration: none;
+            white-space: nowrap;
+        }
+
+        .cite:hover {
+            text-decoration: underline;
+        }
+
+        .ref-pages {
+            display: flex;
+            flex-wrap: wrap;
+            gap: var(--space-2);
+        }
+
+        .ref-page {
+            display: inline-flex;
+            align-items: center;
+            min-height: 28px;
+            padding: 2px var(--space-2);
+            border: 1px solid var(--color-border);
+            border-radius: var(--radius-full);
+            color: var(--color-accent);
+            font-size: var(--text-xs);
+            font-weight: 500;
+            text-decoration: none;
+        }
+
+        .ref-page:hover {
+            background: var(--color-accent-soft);
+            text-decoration: none;
+        }
+
+        .ref-anchor {
+            scroll-margin-top: 24px;
+        }
+
+        .badge--draft {
+            background: #fff7ed;
+            color: #c2410c;
+        }
+
+        .badge--final {
+            background: #ecfdf3;
+            color: var(--color-success);
+        }
+
         .section__title {
             flex: 1;
             font-size: var(--text-base);
@@ -782,7 +839,8 @@
                 padding: var(--space-2) var(--space-4);
             }
 
-            .section__summary {
+            .section__summary,
+            .answer__header {
                 padding: var(--space-3) var(--space-5);
             }
 
@@ -878,35 +936,20 @@
             </div>
 
             <div id="responseSection" hidden>
-                <details class="section" id="responseDetails" open>
-                    <summary class="section__summary">
-                        <svg class="section__chevron" aria-hidden="true"><use href="#icon-chevron"/></svg>
-                        <span class="section__title">Response</span>
-                        <button type="button" class="btn btn--icon copy-btn" data-copy-target="response" hidden>
+                <article class="section" id="answerArticle">
+                    <header class="answer__header">
+                        <h2 class="section__title">Answer</h2>
+                        <button type="button" class="btn btn--icon copy-btn" id="copyBtn" hidden>
                             <svg aria-hidden="true"><use href="#icon-copy"/></svg>
                             <span>Copy</span>
                         </button>
-                    </summary>
+                    </header>
                     <div class="section__body">
                         <div class="prose" id="responseBox"></div>
                     </div>
-                </details>
+                </article>
 
-                <details class="section" id="refinedSummarySection" hidden>
-                    <summary class="section__summary">
-                        <svg class="section__chevron" aria-hidden="true"><use href="#icon-chevron"/></svg>
-                        <span class="section__title">Refined Summary</span>
-                        <button type="button" class="btn btn--icon copy-btn" data-copy-target="refined_summary">
-                            <svg aria-hidden="true"><use href="#icon-copy"/></svg>
-                            <span>Copy</span>
-                        </button>
-                    </summary>
-                    <div class="section__body">
-                        <div class="prose" id="refinedSummaryBox"></div>
-                    </div>
-                </details>
-
-                <details class="section" id="referencesSection">
+                <details class="section" id="referencesSection" open>
                     <summary class="section__summary">
                         <svg class="section__chevron" aria-hidden="true"><use href="#icon-chevron"/></svg>
                         <span class="section__title">References</span>
@@ -971,8 +1014,8 @@
         const LOADING_MESSAGES = [
             'Searching guidance documents...',
             'Retrieving relevant sections...',
-            'Generating summary...',
-            'Refining the answer...'
+            'Generating answer...',
+            'Citing source pages...'
         ];
 
         const $ = (id) => document.getElementById(id);
@@ -982,8 +1025,10 @@
         const queryError = $('queryError');
         const queryHint = $('queryHint');
 
-        const lastResult = { response: '', refined_summary: '' };
+        const lastResult = { response: '', references: [] };
         let loadingTimer = null;
+        let renderTimer = null;
+        let knownRefCount = 0;
 
         function escapeHtml(value) {
             return String(value ?? '')
@@ -1003,6 +1048,45 @@
             }
         }
 
+        function stripResponsePrefix(text) {
+            return String(text ?? '').replace(/^\s*(?:REFINED\s+)?SUMMARY:\s*/i, '');
+        }
+
+        function guidanceStatus(type) {
+            if (!type) return null;
+            return /draft/i.test(type) ? 'Draft' : 'Final';
+        }
+
+        function documentKey(ref, idx) {
+            return ref.display_title || ref.file_name || ref.k_number || `Reference ${idx + 1}`;
+        }
+
+        function groupReferences(refs) {
+            const groups = [];
+            const index = new Map();
+            refs.forEach((ref, i) => {
+                const slot = i + 1;
+                const key = documentKey(ref, i);
+                if (!index.has(key)) {
+                    index.set(key, groups.length);
+                    groups.push({
+                        title: key,
+                        guidance_type: ref.guidance_type,
+                        pdf_link: ref.pdf_link ? ref.pdf_link.split('#')[0] : null,
+                        pages: []
+                    });
+                }
+                const group = groups[index.get(key)];
+                let page = group.pages.find((entry) => entry.page_num === ref.page_num);
+                if (!page) {
+                    page = { page_num: ref.page_num, slots: [], href: ref.pdf_link || group.pdf_link };
+                    group.pages.push(page);
+                }
+                page.slots.push(slot);
+            });
+            return groups;
+        }
+
         // Expects already-escaped text.
         function renderInline(text) {
             return text
@@ -1012,6 +1096,12 @@
                     return href
                         ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${label}</a>`
                         : label;
+                })
+                .replace(/\[(\d+)\]/g, (match, n) => {
+                    const num = Number(n);
+                    return num >= 1 && num <= knownRefCount
+                        ? `<a class="cite" href="#ref-${n}">[${n}]</a>`
+                        : match;
                 })
                 .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
                 .replace(/__([^_]+)__/g, '<strong>$1</strong>')
@@ -1100,75 +1190,111 @@
             $('loading').hidden = true;
         }
 
+        function setCopyVisible(visible) {
+            $('copyBtn').hidden = !visible;
+        }
+
+        function scheduleAnswerRender(final = false) {
+            const draw = () => {
+                renderTimer = null;
+                const text = stripResponsePrefix(lastResult.response);
+                $('responseBox').innerHTML = text
+                    ? renderMarkdown(text)
+                    : '<p class="muted">No response generated.</p>';
+                setCopyVisible(Boolean(text));
+            };
+            if (final) {
+                if (renderTimer) cancelAnimationFrame(renderTimer);
+                draw();
+                return;
+            }
+            if (renderTimer) return;
+            renderTimer = requestAnimationFrame(draw);
+        }
+
         function renderReferences(references) {
             const box = $('referencesBox');
             const refs = Array.isArray(references) ? references : [];
+            lastResult.references = refs;
+            knownRefCount = refs.length;
             $('referencesCount').textContent = refs.length;
+            $('referencesSection').hidden = false;
+            $('referencesSection').open = true;
 
             if (!refs.length) {
                 box.innerHTML = '<p class="muted">No references available.</p>';
                 return;
             }
 
-            const cards = refs.map((ref, idx) => {
-                const title = escapeHtml(ref.display_title || ref.file_name || `Reference ${idx + 1}`);
-                const page = ref.page_num ? `<span class="badge">Page ${escapeHtml(ref.page_num)}</span>` : '<span></span>';
-                const href = ref.pdf_link ? safeUrl(ref.pdf_link) : null;
-                const link = href
-                    ? `<a class="ref-card__link" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">View document<svg aria-hidden="true"><use href="#icon-external"/></svg></a>`
+            const cards = groupReferences(refs).map((group) => {
+                const status = guidanceStatus(group.guidance_type);
+                const badge = status
+                    ? `<span class="badge badge--${status.toLowerCase()}">${status}</span>`
+                    : '';
+                const pages = group.pages.map((page) => {
+                    const anchors = page.slots
+                        .map((slot) => `<span class="ref-anchor" id="ref-${slot}"></span>`)
+                        .join('');
+                    const label = page.page_num ? `Page ${escapeHtml(page.page_num)}` : 'Source';
+                    const href = page.href ? safeUrl(page.href) : null;
+                    const chip = href
+                        ? `<a class="ref-page" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${label}</a>`
+                        : `<span class="badge">${label}</span>`;
+                    return `${anchors}${chip}`;
+                }).join('');
+                const docHref = group.pdf_link ? safeUrl(group.pdf_link) : null;
+                const link = docHref
+                    ? `<a class="ref-card__link" href="${escapeHtml(docHref)}" target="_blank" rel="noopener noreferrer">View document<svg aria-hidden="true"><use href="#icon-external"/></svg></a>`
                     : '';
                 return `
                     <article class="ref-card">
-                        <h3 class="ref-card__title">${title}</h3>
-                        <div class="ref-card__footer">${page}${link}</div>
+                        <h3 class="ref-card__title">${escapeHtml(group.title)}</h3>
+                        <div class="ref-pages">${pages}</div>
+                        <div class="ref-card__footer">${badge}${link}</div>
                     </article>`;
             });
             box.innerHTML = `<div class="ref-grid">${cards.join('')}</div>`;
         }
 
+        function copyPayload() {
+            const answer = stripResponsePrefix(lastResult.response).trim();
+            const groups = groupReferences(lastResult.references);
+            const lines = [answer, '', 'References'];
+            groups.forEach((group, idx) => {
+                const status = guidanceStatus(group.guidance_type);
+                const pages = group.pages
+                    .map((page) => page.page_num)
+                    .filter(Boolean)
+                    .join(', ');
+                const statusBit = status ? ` (${status})` : '';
+                const pageBit = pages ? ` — pp. ${pages}` : '';
+                lines.push(`${idx + 1}. ${group.title}${statusBit}${pageBit}`);
+                const href = group.pages.find((page) => page.href)?.href || group.pdf_link;
+                if (href) lines.push(`   ${href}`);
+            });
+            return lines.join('\n').trim();
+        }
+
         function showError(message) {
             lastResult.response = '';
-            lastResult.refined_summary = '';
             $('responseBox').innerHTML = `<div class="error">Error: ${escapeHtml(message)}</div>`;
-            document.querySelector('[data-copy-target="response"]').hidden = true;
-            $('refinedSummarySection').hidden = true;
-            $('referencesSection').hidden = true;
-            $('responseDetails').open = true;
+            setCopyVisible(false);
             $('responseSection').hidden = false;
         }
 
         function showResult(data) {
-            lastResult.response = data.response || '';
-            lastResult.refined_summary = data.refined_summary || '';
-
-            $('responseBox').innerHTML = lastResult.response
-                ? renderMarkdown(lastResult.response)
-                : '<p class="muted">No response generated.</p>';
-            document.querySelector('[data-copy-target="response"]').hidden = !lastResult.response;
-            $('responseDetails').open = true;
-
-            if (lastResult.refined_summary) {
-                $('refinedSummaryBox').innerHTML = renderMarkdown(lastResult.refined_summary);
-                $('refinedSummarySection').hidden = false;
-                $('refinedSummarySection').open = true;
-            } else {
-                $('refinedSummarySection').hidden = true;
-            }
-
+            lastResult.response = stripResponsePrefix(data.response || '');
             renderReferences(data.references);
-            $('referencesSection').hidden = false;
+            scheduleAnswerRender(true);
             $('responseSection').hidden = false;
         }
 
         function beginStreamingUi() {
             lastResult.response = '';
-            lastResult.refined_summary = '';
-            $('responseBox').innerHTML = '<p class="muted">Generating summary…</p>';
-            document.querySelector('[data-copy-target="response"]').hidden = true;
-            $('refinedSummarySection').hidden = true;
-            $('refinedSummaryBox').innerHTML = '';
-            $('referencesSection').hidden = true;
-            $('responseDetails').open = true;
+            $('responseBox').innerHTML = '<p class="muted">Generating answer…</p>';
+            setCopyVisible(false);
+            $('referencesSection').hidden = false;
+            $('referencesSection').open = true;
             $('responseSection').hidden = false;
         }
 
@@ -1224,7 +1350,6 @@
                 }
                 if (event === 'references') {
                     renderReferences(data.references);
-                    $('referencesSection').hidden = false;
                     stopLoading();
                     return;
                 }
@@ -1235,21 +1360,15 @@
                     }
                     sawContent = true;
                     lastResult.response += data.text;
-                    $('responseBox').innerHTML = renderMarkdown(lastResult.response);
-                    document.querySelector('[data-copy-target="response"]').hidden = false;
+                    scheduleAnswerRender();
+                    setCopyVisible(true);
                     return;
                 }
-                if (event === 'refined' && data.text) {
-                    sawContent = true;
-                    lastResult.refined_summary += data.text;
-                    $('refinedSummaryBox').innerHTML = renderMarkdown(lastResult.refined_summary);
-                    $('refinedSummarySection').hidden = false;
-                    $('refinedSummarySection').open = true;
-                    stopLoading();
-                }
             });
+            scheduleAnswerRender(true);
             if (!sawContent && !lastResult.response) {
                 $('responseBox').innerHTML = '<p class="muted">No response generated.</p>';
+                setCopyVisible(false);
             }
         }
 
@@ -1266,6 +1385,19 @@
             showResult(data);
         }
 
+        function resetResultShell() {
+            lastResult.response = '';
+            lastResult.references = [];
+            knownRefCount = 0;
+            $('responseBox').innerHTML = '<p class="muted">Generating answer…</p>';
+            setCopyVisible(false);
+            $('referencesCount').textContent = '0';
+            $('referencesBox').innerHTML = '<p class="muted">Retrieving sources…</p>';
+            $('referencesSection').hidden = false;
+            $('referencesSection').open = true;
+            $('responseSection').hidden = false;
+        }
+
         async function handleQuery() {
             const query = input.value.trim();
             if (!query) {
@@ -1276,11 +1408,13 @@
             setValidation(false);
 
             $('emptyState').hidden = true;
-            $('responseSection').hidden = true;
-            lastResult.response = '';
-            lastResult.refined_summary = '';
+            const firstQuery = $('responseSection').hidden;
+            resetResultShell();
             submitBtn.disabled = true;
-            startLoading();
+            if (firstQuery) {
+                $('responseSection').hidden = true;
+                startLoading();
+            }
 
             try {
                 try {
@@ -1323,7 +1457,7 @@
         }
 
         async function copyText(button) {
-            const text = lastResult[button.dataset.copyTarget];
+            const text = copyPayload();
             if (!text) return;
             const label = button.querySelector('span');
             const icon = button.querySelector('use');

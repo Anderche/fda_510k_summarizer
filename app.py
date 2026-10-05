@@ -29,8 +29,8 @@ sys.path.insert(0, str(src_path))
 
 from query_rag import load_rag_system
 from query_pipeline import QueryPipeline
-from reference_formatter import format_multiple_references
-from llm_integration import DEFAULT_LLM_MODEL
+from reference_formatter import format_multiple_references, pdf_page_url
+from llm_integration import DEFAULT_LLM_MODEL, strip_response_prefix
 
 # Global variables for loaded system
 pipeline: Optional[QueryPipeline] = None
@@ -168,6 +168,7 @@ class Reference(BaseModel):
     page_num: Optional[int] = None
     para_index: Optional[int] = None
     pdf_link: Optional[str] = None
+    guidance_type: Optional[str] = None
 
 
 class QueryResponse(BaseModel):
@@ -222,7 +223,8 @@ def _format_references(references: List[Dict[str, Any]]) -> List[Reference]:
             k_number=ref_dict.get('k_number'),
             page_num=ref_dict.get('page_num'),
             para_index=ref_dict.get('para_index'),
-            pdf_link=ref_dict.get('pdf_link')
+            pdf_link=pdf_page_url(ref_dict.get('pdf_link'), ref_dict.get('page_num')),
+            guidance_type=ref_dict.get('guidance_type'),
         )
         for ref_dict in references
     ]
@@ -276,7 +278,7 @@ def query_documents(request: QueryRequest):
         # Build response
         response = QueryResponse(
             query=result['query'],
-            response=result.get('response', result.get('summary', '')),
+            response=strip_response_prefix(result.get('response', result.get('summary', ''))),
             refined_summary=result.get('refined_summary'),
             references=_format_references(result.get('references', [])),
             metadata=result.get('metadata', {})
@@ -305,9 +307,7 @@ def _stream_query_events(request: QueryRequest, index_dir: str, query_pipeline: 
     cached = _cache_get(key)
     if cached is not None:
         yield _sse("references", {"references": cached['references']})
-        yield _sse("response", {"text": cached['response']})
-        if cached.get('refined_summary'):
-            yield _sse("refined", {"text": cached['refined_summary']})
+        yield _sse("response", {"text": strip_response_prefix(cached['response'])})
         yield _sse("done", {"metadata": {**cached['metadata'], 'cache_hit': True}})
         return
     
@@ -342,11 +342,10 @@ def _stream_query_events(request: QueryRequest, index_dir: str, query_pipeline: 
         yield _sse("done", {"metadata": metadata})
         return
     
-    # Run both LLM streams in background threads and interleave their deltas
+    # Stream the main answer only; skip the extra refined-summary call in the demo UI
     events: "queue.Queue[Tuple[str, Optional[str]]]" = queue.Queue()
     producers = {
         'response': lambda: query_pipeline.stream_answer(request.query, retrieval),
-        'refined': lambda: query_pipeline.stream_refined(request.query, retrieval),
     }
     
     def produce(name: str, make_stream):
@@ -377,12 +376,12 @@ def _stream_query_events(request: QueryRequest, index_dir: str, query_pipeline: 
     
     timings['total'] = round((time.perf_counter() - total_start) * 1000, 1)
     
-    response_text = "".join(collected['response'])
+    response_text = strip_response_prefix("".join(collected['response']))
     if response_text:
         _cache_put(key, {
             'query': request.query,
             'response': response_text,
-            'refined_summary': "".join(collected['refined']) or None,
+            'refined_summary': None,
             'references': references,
             'metadata': metadata
         })
@@ -394,7 +393,7 @@ def query_documents_stream(request: QueryRequest):
     """
     Stream a query answer as Server-Sent Events.
     
-    Events: `references`, `response` (text delta), `refined` (text delta), `done` (metadata), `error`.
+    Events: `references`, `response` (text delta), `done` (metadata), `error`.
     """
     index_dir, query_pipeline = _resolve_pipeline(request)
     return StreamingResponse(

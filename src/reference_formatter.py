@@ -5,7 +5,7 @@ Formats references with file, page, paragraph, and PDF links.
 """
 
 import os
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 # Mapping of FDA guidance filenames to proper titles and links
 GUIDANCE_MAPPING = {
@@ -38,6 +38,54 @@ def get_guidance_info(file_name: str) -> Optional[Dict[str, str]]:
         Dictionary with 'title', 'link', and 'type' keys, or None if not found
     """
     return GUIDANCE_MAPPING.get(file_name)
+
+
+def guidance_status(guidance_type: Optional[str]) -> Optional[str]:
+    """Map a guidance type string to Draft or Final."""
+    if not guidance_type:
+        return None
+    return "Draft" if "draft" in guidance_type.lower() else "Final"
+
+
+def pdf_page_url(pdf_link: Optional[str], page_num: Optional[int] = None) -> Optional[str]:
+    """Append #page=N to a PDF URL when a page number is known."""
+    if not pdf_link:
+        return None
+    base = pdf_link.split("#", 1)[0]
+    if page_num in (None, ""):
+        return base
+    return f"{base}#page={page_num}"
+
+
+def group_references(references: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Group references by document title, collecting page numbers and retrieval slots."""
+    groups: List[Dict[str, Any]] = []
+    index: Dict[str, int] = {}
+    for i, ref in enumerate(references, 1):
+        title = ref.get("display_title") or ref.get("file_name") or ref.get("k_number") or f"Reference {i}"
+        if title not in index:
+            index[title] = len(groups)
+            pdf_link = ref.get("pdf_link")
+            groups.append({
+                "title": title,
+                "display_title": ref.get("display_title"),
+                "file_name": ref.get("file_name"),
+                "guidance_type": ref.get("guidance_type"),
+                "pdf_link": pdf_link.split("#", 1)[0] if pdf_link else None,
+                "pages": [],
+            })
+        group = groups[index[title]]
+        page_num = ref.get("page_num")
+        page_entry = next((page for page in group["pages"] if page["page_num"] == page_num), None)
+        if page_entry is None:
+            page_entry = {
+                "page_num": page_num,
+                "slots": [],
+                "pdf_link": pdf_page_url(group["pdf_link"], page_num),
+            }
+            group["pages"].append(page_entry)
+        page_entry["slots"].append(i)
+    return groups
 
 
 def format_reference(chunk_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -133,7 +181,7 @@ def format_reference_string(chunk_data: Dict[str, Any], include_link: bool = Tru
     
     # Add link if requested
     if include_link and ref['pdf_link']:
-        ref_str += f" | Link: {ref['pdf_link']}"
+        ref_str += f" | Link: {pdf_page_url(ref['pdf_link'], ref['page_num'])}"
     
     return ref_str
 
@@ -176,7 +224,7 @@ def format_reference_markdown(chunk_data: Dict[str, Any]) -> str:
     
     # Add clickable link if available
     if ref['pdf_link']:
-        ref_text = f"[{ref_text}]({ref['pdf_link']})"
+        ref_text = f"[{ref_text}]({pdf_page_url(ref['pdf_link'], ref['page_num'])})"
     
     return ref_text
 
