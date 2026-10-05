@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from llm_integration import (  # noqa: E402
     LLMGenerator,
+    SimpleLLMGenerator,
     citation_instructions,
     format_context_from_chunks,
     query_requests_structured_format,
@@ -86,3 +87,24 @@ def test_prompt_context_includes_every_chunk_in_full():
         assert f"[{i}]" in guidance_prompt
         assert f"[{i}]" in response_prompt
     assert "..." not in joined
+
+
+def test_fallback_and_simple_responses_include_full_chunk_text():
+    long_text = "A" * 250 + " END OF CHUNK"
+    chunks = [
+        {"text": long_text, "metadata": {"file_name": "doc.pdf", "page_num": 3}},
+        {"text": "SECOND CHUNK FULL TEXT", "metadata": {"file_name": "doc.pdf", "page_num": 4}},
+        {"text": "THIRD", "metadata": {"file_name": "doc.pdf", "page_num": 5}},
+        {"text": "FOURTH", "metadata": {"file_name": "doc.pdf", "page_num": 6}},
+    ]
+    gen = LLMGenerator.__new__(LLMGenerator)
+    fallback = gen._generate_fallback_summary("query", chunks)
+    simple = SimpleLLMGenerator().generate_response(
+        "query", chunks, source_type="corpus_ai_guidances"
+    )
+    for text in (fallback, simple):
+        assert long_text in text
+        assert "SECOND CHUNK FULL TEXT" in text
+        assert "FOURTH" in text
+        assert "..." not in text
+

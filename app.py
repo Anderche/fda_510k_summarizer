@@ -169,7 +169,6 @@ class Reference(BaseModel):
     para_index: Optional[int] = None
     pdf_link: Optional[str] = None
     guidance_type: Optional[str] = None
-    text: Optional[str] = None
 
 
 class QueryResponse(BaseModel):
@@ -226,7 +225,6 @@ def _format_references(references: List[Dict[str, Any]]) -> List[Reference]:
             para_index=ref_dict.get('para_index'),
             pdf_link=pdf_page_url(ref_dict.get('pdf_link'), ref_dict.get('page_num')),
             guidance_type=ref_dict.get('guidance_type'),
-            text=ref_dict.get('text'),
         )
         for ref_dict in references
     ]

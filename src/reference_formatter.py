@@ -142,8 +142,7 @@ def format_reference(chunk_data: Dict[str, Any]) -> Dict[str, Any]:
         'pdf_link': pdf_link,
         'file_path': file_path,
         'display_title': display_title,
-        'guidance_type': guidance_info.get('type') if guidance_info else None,
-        'text': chunk_data.get('text', '') or '',
+        'guidance_type': guidance_info.get('type') if guidance_info else None
     }
 
 
