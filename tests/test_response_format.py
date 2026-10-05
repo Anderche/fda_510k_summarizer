@@ -50,14 +50,34 @@ def test_guidance_prompt_includes_list_format_rule():
     assert "[1] guidance.pdf, p. 12" in user_prompt
     assert "Cite sources inline with [n]" in user_prompt
     assert "Start the answer with SUMMARY:" not in user_prompt
-    assert "about 250 words" in user_prompt
+    assert "words" not in user_prompt.split("INSTRUCTIONS:", 1)[1]
 
 
-def test_reference_text_is_trimmed_to_300_chars():
+def test_reference_text_is_trimmed_to_300_words():
     from reference_formatter import format_reference
 
-    ref = format_reference({"text": "x" * 500, "metadata": {"file_name": "doc.pdf", "page_num": 1}})
-    assert ref["text"] == "x" * 300
+    words = [f"w{i}" for i in range(500)]
+    ref = format_reference({"text": " ".join(words), "metadata": {"file_name": "doc.pdf", "page_num": 1}})
+    assert ref["text"] == " ".join(words[:300])
+
+
+def test_truncate_words_keeps_short_text_and_whitespace():
+    from reference_formatter import truncate_words
+
+    assert truncate_words("one\ntwo  three") == "one\ntwo  three"
+    assert truncate_words("a b c d", 2) == "a b"
+    assert truncate_words(None) == ""
+
+
+def test_each_prompt_chunk_is_capped_but_all_chunks_kept():
+    chunks = [
+        {"text": " ".join(f"c{i}w{j}" for j in range(400)), "metadata": {"file_name": "doc.pdf", "page_num": i}}
+        for i in range(1, 4)
+    ]
+    joined = format_context_from_chunks(chunks)
+    for i in range(1, 4):
+        assert f"c{i}w299" in joined
+        assert f"c{i}w300" not in joined
 
 
 def test_guidance_prompt_does_not_force_summary_label():

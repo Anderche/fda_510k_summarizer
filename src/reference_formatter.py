@@ -5,9 +5,21 @@ Formats references with file, page, paragraph, and PDF links.
 """
 
 import os
+import re
 from typing import Dict, Any, Optional, List
 
-REFERENCE_PREVIEW_CHARS = 300
+CHUNK_MAX_WORDS = 300
+
+
+def truncate_words(text: Optional[str], max_words: int = CHUNK_MAX_WORDS) -> str:
+    """Trim text to at most max_words words, preserving original whitespace."""
+    text = (text or '').strip()
+    if max_words <= 0:
+        return ''
+    match = re.match(r'(?:\S+\s+){%d}\S+' % (max_words - 1), text)
+    if not match or match.end() == len(text):
+        return text
+    return match.group(0)
 
 # Mapping of FDA guidance filenames to proper titles and links
 GUIDANCE_MAPPING = {
@@ -145,7 +157,7 @@ def format_reference(chunk_data: Dict[str, Any]) -> Dict[str, Any]:
         'file_path': file_path,
         'display_title': display_title,
         'guidance_type': guidance_info.get('type') if guidance_info else None,
-        'text': (chunk_data.get('text') or '')[:REFERENCE_PREVIEW_CHARS],
+        'text': truncate_words(chunk_data.get('text')),
     }
 
 

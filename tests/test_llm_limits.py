@@ -20,11 +20,10 @@ def test_lean_llm_and_timeout_limits():
     assert values["DEFAULT_LLM_MODEL"] == "claude-haiku-4-5"
     assert values["GUIDANCE_MAX_TOKENS"] == 8192
     assert values["RESPONSE_MAX_TOKENS"] == 8192
-    assert values["REFINED_MAX_TOKENS"] == 1000
+    assert values["REFINED_MAX_TOKENS"] == 8192
     assert values["REFINED_MAX_CHUNKS"] == 8
-    assert values["REFINED_MAX_CHUNK_CHARS"] == 300
-    assert values["SUMMARY_TARGET_WORDS"] == 250
+    assert "SUMMARY_TARGET_WORDS" not in values
 
 
-def test_reference_preview_limit():
-    assert _module_constants("reference_formatter.py")["REFERENCE_PREVIEW_CHARS"] == 300
+def test_chunk_word_limit():
+    assert _module_constants("reference_formatter.py")["CHUNK_MAX_WORDS"] == 300

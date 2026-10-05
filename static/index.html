@@ -124,6 +124,16 @@
             line-height: 1.15;
         }
 
+        .header__title a {
+            color: inherit;
+            text-decoration: none;
+            border-radius: var(--radius-sm);
+        }
+
+        .header__title a:hover {
+            color: var(--color-accent);
+        }
+
         .info-btn {
             display: inline-flex;
             align-items: center;
@@ -893,7 +903,7 @@
     <main class="page">
         <header class="header">
             <div class="header__row">
-                <h1 class="header__title">FDA AI Guidance Summarizer</h1>
+                <h1 class="header__title"><a href="/" id="homeLink">FDA AI Guidance Summarizer</a></h1>
                 <button type="button" class="info-btn" id="infoBtn" aria-label="About this app" aria-haspopup="dialog" aria-controls="infoDialog">
                     <svg aria-hidden="true"><use href="#icon-info"/></svg>
                 </button>
@@ -1041,6 +1051,7 @@
         let loadingTimer = null;
         let renderTimer = null;
         let knownRefCount = 0;
+        let activeRequest = null;
 
         function escapeHtml(value) {
             return String(value ?? '')
@@ -1069,7 +1080,7 @@
             return /draft/i.test(type) ? 'Draft' : 'Final';
         }
 
-        const REFERENCE_PREVIEW_CHARS = 300;
+        const CHUNK_MAX_WORDS = 300;
 
         function documentKey(ref, idx) {
             return ref.display_title || ref.file_name || ref.k_number || `Reference ${idx + 1}`;
@@ -1265,7 +1276,7 @@
                     ? `<a class="ref-card__link" href="${escapeHtml(docHref)}" target="_blank" rel="noopener noreferrer">View document<svg aria-hidden="true"><use href="#icon-external"/></svg></a>`
                     : '';
                 const previews = group.previews.map((preview) => {
-                    const ellipsis = preview.text.length >= REFERENCE_PREVIEW_CHARS ? '…' : '';
+                    const ellipsis = preview.text.trim().split(/\s+/).length >= CHUNK_MAX_WORDS ? '…' : '';
                     return `<p class="ref-preview"><span class="ref-preview__slot">[${preview.slot}]</span> ${escapeHtml(preview.text)}${ellipsis}</p>`;
                 }).join('');
                 return `
@@ -1353,11 +1364,12 @@
             }
         }
 
-        async function runStreamingQuery(query) {
+        async function runStreamingQuery(query, signal) {
             const response = await fetch('/query/stream', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
-                body: JSON.stringify({ query, k: 5 })
+                body: JSON.stringify({ query, k: 5 }),
+                signal
             });
             const contentType = response.headers.get('content-type') || '';
             if (!response.ok || !response.body || !contentType.includes('text/event-stream')) {
@@ -1395,11 +1407,12 @@
             }
         }
 
-        async function runJsonQuery(query) {
+        async function runJsonQuery(query, signal) {
             const response = await fetch('/query', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ query, k: 5 })
+                body: JSON.stringify({ query, k: 5 }),
+                signal
             });
             const data = await response.json().catch(() => ({}));
             if (!response.ok) {
@@ -1439,30 +1452,57 @@
                 startLoading();
             }
 
+            const controller = new AbortController();
+            activeRequest = controller;
+            const { signal } = controller;
+
             try {
                 try {
-                    await runStreamingQuery(query);
+                    await runStreamingQuery(query, signal);
                 } catch (streamError) {
-                    if (lastResult.response) {
+                    if (signal.aborted || lastResult.response) {
                         throw streamError;
                     }
-                    await runJsonQuery(query);
+                    await runJsonQuery(query, signal);
                 }
             } catch (error) {
-                showError(error.message);
+                if (!signal.aborted) showError(error.message);
             } finally {
-                stopLoading();
-                submitBtn.disabled = false;
+                if (activeRequest === controller) {
+                    activeRequest = null;
+                    stopLoading();
+                    submitBtn.disabled = false;
+                }
             }
         }
 
         function clearResponse() {
+            if (activeRequest) {
+                activeRequest.abort();
+                activeRequest = null;
+            }
+            if (renderTimer) {
+                cancelAnimationFrame(renderTimer);
+                renderTimer = null;
+            }
+            stopLoading();
+            submitBtn.disabled = false;
             input.value = '';
             autoResize();
             setValidation(false);
-            stopLoading();
+            lastResult.response = '';
+            lastResult.references = [];
+            knownRefCount = 0;
+            $('responseBox').innerHTML = '';
+            $('referencesBox').innerHTML = '';
+            $('referencesCount').textContent = '0';
+            setCopyVisible(false);
             $('responseSection').hidden = true;
             $('emptyState').hidden = false;
+            if (window.location.hash) {
+                history.replaceState(null, '', window.location.pathname + window.location.search);
+            }
+            window.scrollTo({ top: 0 });
             input.focus();
         }
 
@@ -1534,6 +1574,11 @@
         });
 
         $('clearBtn').addEventListener('click', clearResponse);
+        $('homeLink').addEventListener('click', (event) => {
+            if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+            event.preventDefault();
+            clearResponse();
+        });
 
         const infoDialog = $('infoDialog');
         $('infoBtn').addEventListener('click', () => infoDialog.showModal());
