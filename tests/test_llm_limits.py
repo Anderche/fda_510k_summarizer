@@ -18,8 +18,8 @@ def test_lean_llm_and_timeout_limits():
     values = _module_constants("llm_integration.py")
     assert values["FDA_API_TIMEOUT_SECONDS"] == 3
     assert values["DEFAULT_LLM_MODEL"] == "claude-haiku-4-5"
-    assert values["GUIDANCE_MAX_TOKENS"] == 4096
-    assert values["RESPONSE_MAX_TOKENS"] == 4096
+    assert values["GUIDANCE_MAX_TOKENS"] == 8192
+    assert values["RESPONSE_MAX_TOKENS"] == 8192
     assert values["REFINED_MAX_TOKENS"] == 1000
     assert values["REFINED_MAX_CHUNKS"] == 8
     assert values["REFINED_MAX_CHUNK_CHARS"] == 600

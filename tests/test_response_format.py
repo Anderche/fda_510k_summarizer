@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from llm_integration import (  # noqa: E402
     LLMGenerator,
     citation_instructions,
+    format_context_from_chunks,
     query_requests_structured_format,
     response_format_instructions,
     strip_response_prefix,
@@ -66,3 +67,22 @@ def test_strip_response_prefix_removes_labels():
     assert strip_response_prefix("REFINED SUMMARY:\nHello") == "Hello"
     assert strip_response_prefix("Hello") == "Hello"
     assert strip_response_prefix("") == ""
+
+
+def test_prompt_context_includes_every_chunk_in_full():
+    chunks = [
+        {"text": f"FULL CHUNK TEXT {i} " + ("x" * 200), "metadata": {"file_name": f"doc{i}.pdf", "page_num": i}}
+        for i in range(1, 7)
+    ]
+    gen = LLMGenerator.__new__(LLMGenerator)
+    _, guidance_prompt = gen._build_guidance_prompts("List the PCCP elements", chunks)
+    _, response_prompt = gen._build_response_prompts("What is substantial equivalence?", chunks)
+    joined = format_context_from_chunks(chunks)
+    for i in range(1, 7):
+        marker = f"FULL CHUNK TEXT {i}"
+        assert marker in joined
+        assert marker in guidance_prompt
+        assert marker in response_prompt
+        assert f"[{i}]" in guidance_prompt
+        assert f"[{i}]" in response_prompt
+    assert "..." not in joined
