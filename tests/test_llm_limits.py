@@ -22,4 +22,9 @@ def test_lean_llm_and_timeout_limits():
     assert values["RESPONSE_MAX_TOKENS"] == 8192
     assert values["REFINED_MAX_TOKENS"] == 1000
     assert values["REFINED_MAX_CHUNKS"] == 8
-    assert values["REFINED_MAX_CHUNK_CHARS"] == 600
+    assert values["REFINED_MAX_CHUNK_CHARS"] == 300
+    assert values["SUMMARY_TARGET_WORDS"] == 250
+
+
+def test_reference_preview_limit():
+    assert _module_constants("reference_formatter.py")["REFERENCE_PREVIEW_CHARS"] == 300
