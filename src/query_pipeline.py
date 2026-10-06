@@ -370,8 +370,11 @@ Answer:"""
                     filtered_results.append(chunk_with_score)
             
             filtered_results.sort(key=lambda x: x.get('similarity_score', 0.0), reverse=True)
-            all_retrieved.append({'retrieved_chunks': filtered_results})
-        else:
+            if filtered_results:
+                all_retrieved.append({'retrieved_chunks': filtered_results})
+            else:
+                queries_used.append("Section search empty; fell back to full index")
+        if not all_retrieved:
             all_retrieved.append({'retrieved_chunks': self.retriever.retrieve_with_context(
                 query, k=k*2, min_similarity=min_similarity, use_section_filtering=False
             )})
