@@ -22,14 +22,15 @@ from typing import Callable, Dict, Iterator, List, Optional, Any, Set, Tuple
 from embeddings import EmbeddingGenerator
 from vector_store import VectorStore
 from rag_retrieval import RAGRetriever
-from llm_integration import GUIDANCE_MAX_TOKENS, LLMGenerator, RESPONSE_MAX_TOKENS, SUMMARY_TARGET_WORDS, SimpleLLMGenerator, strip_response_prefix
-from reference_formatter import format_multiple_references
+from llm_integration import GUIDANCE_MAX_TOKENS, LLMGenerator, RESPONSE_MAX_TOKENS, SimpleLLMGenerator, strip_response_prefix
+from reference_formatter import format_multiple_references, truncate_words
 from query_enhancement import QueryEnhancer
 from ner_tfidf_extractor import NERTFIDFExtractor
 
 try:
     from langchain.chains import RetrievalQA
     from langchain.chains.retrieval_qa.base import BaseRetrievalQAChain
+    from langchain_core.documents import Document
     from langchain_core.prompts import PromptTemplate
     from langchain_anthropic import ChatAnthropic
     from langchain_core.messages import BaseMessage
@@ -121,8 +122,6 @@ Context:
 {context}
 
 Question: {question}
-
-Write a basic summary of about """ + str(SUMMARY_TARGET_WORDS) + """ words that synthesizes the context into coherent natural language. Do not exceed """ + str(SUMMARY_TARGET_WORDS + 50) + """ words.
 
 Follow any formatting requested in the question. If the question asks to list, itemize, enumerate, or give steps, answer with a Markdown list ("- item" or "1. item"), one item per line. Do not collapse those items into a paragraph. Otherwise write a complete answer from the provided documents; do not omit relevant requirements. Focus on regulatory requirements, standards, and guidance specific to artificial intelligence in medical devices. Cite sources inline with [n] matching the numbered context documents. Do not start with SUMMARY: or restate the question.
 
@@ -289,9 +288,14 @@ Answer:"""
             # Format references
             references = format_multiple_references(retrieved_chunks, format_type="dict")
             
+            capped_docs = [
+                Document(page_content=truncate_words(doc.page_content), metadata=doc.metadata)
+                for doc in source_docs
+            ]
+
             def answer() -> str:
                 result = self.langchain_qa_chain.combine_documents_chain.invoke(
-                    {"input_documents": source_docs, "question": query}
+                    {"input_documents": capped_docs, "question": query}
                 )
                 if isinstance(result, str):
                     return result
@@ -366,8 +370,11 @@ Answer:"""
                     filtered_results.append(chunk_with_score)
             
             filtered_results.sort(key=lambda x: x.get('similarity_score', 0.0), reverse=True)
-            all_retrieved.append({'retrieved_chunks': filtered_results})
-        else:
+            if filtered_results:
+                all_retrieved.append({'retrieved_chunks': filtered_results})
+            else:
+                queries_used.append("Section search empty; fell back to full index")
+        if not all_retrieved:
             all_retrieved.append({'retrieved_chunks': self.retriever.retrieve_with_context(
                 query, k=k*2, min_similarity=min_similarity, use_section_filtering=False
             )})

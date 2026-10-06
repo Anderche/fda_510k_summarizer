@@ -10,7 +10,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from typing import Callable, Iterator, List, Dict, Optional, Any, Tuple
-from reference_formatter import get_guidance_info
+from reference_formatter import get_guidance_info, truncate_words
 
 try:
     import requests
@@ -23,10 +23,8 @@ FDA_API_TIMEOUT_SECONDS = 3
 DEFAULT_LLM_MODEL = "claude-haiku-4-5"
 GUIDANCE_MAX_TOKENS = 8192  # full guidance answers, including lists
 RESPONSE_MAX_TOKENS = 8192  # full 510(k) answers plus citations
-REFINED_MAX_TOKENS = 1000  # refined summary of about 250 words
+REFINED_MAX_TOKENS = 8192
 REFINED_MAX_CHUNKS = 8
-REFINED_MAX_CHUNK_CHARS = 300
-SUMMARY_TARGET_WORDS = 250
 REFINED_MAX_SUB_SUMMARIES = 20
 
 _LIST_FORMAT_RE = re.compile(
@@ -84,9 +82,9 @@ def format_source_header(index: int, chunk: Dict[str, Any]) -> str:
 
 
 def format_context_from_chunks(context_chunks: List[Dict[str, Any]]) -> str:
-    """Join retrieved chunks in full, numbered to match inline [n] citations."""
+    """Join retrieved chunks (each capped at CHUNK_MAX_WORDS), numbered to match inline [n] citations."""
     return "\n\n".join(
-        f"{format_source_header(i, chunk)}:\n{chunk.get('text', '')}"
+        f"{format_source_header(i, chunk)}:\n{truncate_words(chunk.get('text'))}"
         for i, chunk in enumerate(context_chunks, 1)
     )
 
@@ -98,15 +96,6 @@ def citation_instructions() -> str:
         "- Place each citation immediately after the claim it supports.\n"
         "- Do not start with SUMMARY: or restate the user query.\n"
         "- Write a complete answer from the provided documents; do not omit relevant requirements."
-    )
-
-
-def summary_length_instructions() -> str:
-    return (
-        "LENGTH:\n"
-        f"- Write a basic summary of about {SUMMARY_TARGET_WORDS} words that synthesizes the documents "
-        "into coherent natural language.\n"
-        f"- Do not exceed {SUMMARY_TARGET_WORDS + 50} words."
     )
 
 
@@ -394,7 +383,6 @@ RELEVANT DOCUMENTS:
 
 INSTRUCTIONS:
 Provide a focused response that directly answers the query based on the FDA AI guidance documents provided. Focus on regulatory requirements, standards, and guidance specific to artificial intelligence in medical devices. Use metadata from documents (file names, sections) but do not reference product codes.
-{summary_length_instructions()}
 {response_format_instructions(query)}
 {citation_instructions()}"""
 
@@ -439,7 +427,7 @@ Provide a focused response that directly answers the query based on the FDA AI g
         summary_parts = ["Based on the retrieved FDA documents:"]
         
         for i, chunk in enumerate(context_chunks, 1):
-            chunk_text = chunk.get('text', '').strip()
+            chunk_text = truncate_words(chunk.get('text'))
             if chunk_text:
                 summary_parts.append(f"\n[{i}] {chunk_text}")
         
@@ -788,14 +776,10 @@ CRITICAL: If verified device information was provided above, you MUST reference 
         if full_chunk_texts:
             # Limit number of chunks and length to stay within context limits
             max_chunks = min(len(full_chunk_texts), REFINED_MAX_CHUNKS)
-            max_chunk_length = REFINED_MAX_CHUNK_CHARS
             
             chunk_texts_formatted = []
             for i, chunk_text in enumerate(full_chunk_texts[:max_chunks], 1):
-                # Truncate if too long
-                if len(chunk_text) > max_chunk_length:
-                    chunk_text = chunk_text[:max_chunk_length] + "..."
-                chunk_texts_formatted.append(f"Chunk {i}:\n{chunk_text}")
+                chunk_texts_formatted.append(f"Chunk {i}:\n{truncate_words(chunk_text)}")
             
             full_context_text = '\n\n'.join(chunk_texts_formatted)
             refined_context_parts.append(f"FULL CHUNK TEXTS FROM {context_max_section} SECTION:\n{full_context_text}")
@@ -817,7 +801,7 @@ Comprehensive Context from {context_max_section} Section:
 {refined_context}
 
 INSTRUCTIONS:
-Generate a detailed, refined summary of about {SUMMARY_TARGET_WORDS} words that:
+Generate a detailed, refined summary that:
 1. Directly and comprehensively answers the user's query
 2. Synthesizes information from ALL available chunks in the '{context_max_section}' section
 3. Incorporates the relevant keywords naturally throughout the response
@@ -857,7 +841,7 @@ class SimpleLLMGenerator:
             response_parts = [f"Based on FDA AI guidance documents:"]
             
             for i, chunk in enumerate(context_chunks, 1):
-                chunk_text = chunk.get('text', '').strip()
+                chunk_text = truncate_words(chunk.get('text'))
                 header = format_source_header(i, chunk)
                 if chunk_text:
                     response_parts.append(f"\n{header}\n{chunk_text}")
@@ -875,7 +859,7 @@ class SimpleLLMGenerator:
             response_parts.append(f"\nRelevant sections: {context_sections}")
         
         for i, chunk in enumerate(context_chunks, 1):
-            chunk_text = chunk.get('text', '').strip()
+            chunk_text = truncate_words(chunk.get('text'))
             if chunk_text:
                 response_parts.append(f"\n[{i}] {chunk_text}")
         
